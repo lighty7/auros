@@ -82,8 +82,6 @@ class AuraViewModel(app: Application) : AndroidViewModel(app) {
     private val _ui = MutableStateFlow(UiState(profile = store.profile(), signedIn = cloud.uid != null, email = cloud.email ?: "", myUid = cloud.uid ?: ""))
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 
-    init { refresh(); if (cloud.uid != null) loadSocial() }
-
     private fun err(e: Throwable) { _ui.value = _ui.value.copy(cloudBusy = false, cloudError = e.message ?: e.javaClass.simpleName) }
 
     fun saveProfile(p: Profile) {
@@ -332,4 +330,8 @@ class AuraViewModel(app: Application) : AndroidViewModel(app) {
             loadInsight()
         }
     }
+
+    // Kept last on purpose: refresh() launches a coroutine that runs immediately on the main thread and
+    // reads properties declared above (earnLock, lastUpdateCheck...). Initialising them after it was a crash.
+    init { refresh(); if (cloud.uid != null) loadSocial() }
 }

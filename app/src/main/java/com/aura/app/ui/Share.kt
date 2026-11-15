@@ -160,15 +160,15 @@ fun renderCard(ctx: Context, card: ShareCard, who: Sharer): Bitmap {
 
     // footer: who, level, total
     val rule = Paint().apply { color = LINE; strokeWidth = 3f }
-    cv.drawLine(96f, 1450f, W - 96f, 1450f, rule)
+    cv.drawLine(96f, 1385f, W - 96f, 1385f, rule)
     val name = TextUtils.ellipsize(who.name.ifBlank { "Aura" }, tp(BONE, 64f, semi), 888f, TextUtils.TruncateAt.END).toString()
-    cv.drawText(name, 96f, 1510f, tp(BONE, 64f, semi, -0.01f))
-    cv.drawText("Level $lvl  ·  ${Aura.levelName(lvl)}", 96f, 1545f, tp(MUTED, 42f, tf))
+    cv.drawText(name, 96f, 1458f, tp(BONE, 64f, semi, -0.01f))
+    cv.drawText("Level $lvl  ·  ${Aura.levelName(lvl)}", 96f, 1516f, tp(MUTED, 40f, tf))
     val tot = tp(ACCENT, 84f, medium, -0.02f)
     val ts = "${who.aura}"
-    cv.drawText(ts, W - 96f - tot.measureText(ts), 1510f, tot)
+    cv.drawText(ts, W - 96f - tot.measureText(ts), 1458f, tot)
     val al = tp(MUTED, 32f, semi, 0.12f)
-    cv.drawText("AURA", W - 96f - al.measureText("AURA"), 1545f, al)
+    cv.drawText("AURA", W - 96f - al.measureText("AURA"), 1516f, al)
     return bmp
 }
 
