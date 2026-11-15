@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -689,4 +690,30 @@ private fun You(vm: AuraViewModel, ui: UiState) {
     else Text("Sign in under Circle to follow friends and post.", style = T.label)
     Gap(28)
     Text("Aura follows your phone's light or dark mode.", style = T.label)
+    Gap(28)
+    val ctx = LocalContext.current
+    Caps("About")
+    Gap(8)
+    Text("Made by Yashwanth H P", style = T.head)
+    Gap(8)
+    LinkRow(ctx, "Aura's page", "yashwanth.duckdns.org/aura", "https://www.yashwanth.duckdns.org/aura")
+    Rule()
+    LinkRow(ctx, "Source on GitHub", "lighty7/auros", "https://github.com/lighty7/auros")
+    Rule()
+    Gap(10)
+    Text("Version ${com.aura.app.BuildConfig.VERSION_NAME}", style = T.label)
+    Gap(20)
+}
+
+@Composable
+private fun LinkRow(ctx: android.content.Context, label: String, short: String, url: String) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 52.dp)
+            .clickable { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = T.body, modifier = Modifier.weight(1f))
+        GapW(12)
+        Caps(short, color = C.accent)
+    }
 }
