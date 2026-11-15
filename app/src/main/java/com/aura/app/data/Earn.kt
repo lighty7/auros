@@ -22,6 +22,12 @@ object EarnRules {
     const val COOL_PER_DAY = 5
     const val MAX_BACK_DAYS = 30
     const val LEDGER_CAP = 400
+    /** aura from upvotes: +1 per net upvote on each of your posts, up to this many per post */
+    const val VOTE_CAP = 20
+    const val POSTS_SCAN = 50
+    const val GIVE_COST = 5
+    const val GIVE_PER_DAY = 3
+    const val HELPED_PTS = 10
 
     val KINDS = listOf("REST", "STEPS", "MOVE", "FOCUS")
     fun title(kind: String) = when (kind) {
@@ -47,6 +53,9 @@ data class EarnState(
 ) {
     val total: Int get() = base + ledger.sumOf { it.points }
 }
+
+/** A ledger entry made by Circle rather than by the day's health data. */
+fun isSocial(kind: String) = kind.startsWith("VOTES:") || kind.startsWith("GIFT:") || kind.startsWith("GAVE:")
 
 data class EarnResult(val state: EarnState, val gained: Int)
 
@@ -135,12 +144,37 @@ object Earn {
         var base = s.base
         var out: List<Earned> = list
         if (list.size > EarnRules.LEDGER_CAP) {
+            // social entries are keyed by post or gift, not by day, so they are never trimmed (they would be added again)
             val sorted = list.sortedBy { it.epochDay } // stable
-            val drop = sorted.size - EarnRules.LEDGER_CAP
-            base += sorted.take(drop).sumOf { it.points }
-            out = sorted.drop(drop)
+            val gone = sorted.filter { !isSocial(it.kind) }.take(sorted.size - EarnRules.LEDGER_CAP)
+            base += gone.sumOf { it.points }
+            out = sorted - gone.toSet()
         }
         return EarnResult(EarnState(s.start, lastEval, quiet, base, seen, out), gained)
+    }
+
+    /**
+     * Apply Circle entries: add each one not yet in the ledger, update the points of one that is (keyed by kind, so
+     * never twice), and drop gifts whose document is gone. [giftKeys] is null when gifts could not be read.
+     */
+    fun social(s: EarnState, entries: List<Earned>, giftKeys: Set<String>?): EarnResult {
+        val list = s.ledger.toMutableList()
+        var gained = 0
+        entries.forEach { e ->
+            val i = list.indexOfFirst { it.kind == e.kind }
+            if (i < 0) { if (e.points != 0) { list.add(e); gained += maxOf(0, e.points) } }
+            else if (list[i].points != e.points || list[i].detail != e.detail) { gained += maxOf(0, e.points - list[i].points); list[i] = list[i].copy(points = e.points, detail = e.detail) }
+        }
+        if (giftKeys != null) list.removeAll { it.kind.startsWith("GIFT:") && it.kind !in giftKeys }
+        return EarnResult(s.copy(ledger = list), gained)
+    }
+
+    /** Why "Give 5" is unavailable, or null when it is. */
+    fun giveBlock(ledger: List<Earned>, aura: Int, postId: String, today: Long): String? = when {
+        ledger.any { it.kind == "GAVE:$postId" } -> "Given"
+        ledger.count { it.kind.startsWith("GAVE:") && it.epochDay == today } >= EarnRules.GIVE_PER_DAY -> "3 a day"
+        aura < EarnRules.GIVE_COST -> "Needs 5 aura"
+        else -> null
     }
 
     /** Ledger newest first (stable: later entries of a day come first). */

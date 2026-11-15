@@ -17,16 +17,22 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.tasks.await
 
-/** An achievement a user chose to share: goal name, target and points only. Raw health data never leaves the phone. */
+val TOPICS = listOf("Sleep", "Steps", "Training", "Screen time", "Food", "Mind", "General")
+
+/** A forum post. "done" is something achieved (from the ledger, goals or activities); "ask" is a question written by the user. */
 data class Post(
     val id: String, val uid: String, val name: String, val occupation: String,
-    val title: String, val metric: String, val target: Double, val days: Int, val points: Int, val ts: Long,
-    /** "goal" or "activity" */
-    val kind: String = "goal", val sport: String = "", val distM: Double = 0.0, val elapsedS: Int = 0, val hrAvg: Int = 0,
-    val detail: String = "",
-    /** props received; -1 when the count could not be read (hidden in the UI) */
-    val props: Int = -1, val propped: Boolean = false,
+    val type: String, val topic: String, val title: String, val body: String, val points: Int, val ts: Long,
+    val up: Int = 0, val down: Int = 0, val score: Int = 0, val comments: Int = 0,
+    /** this user's vote: 1, -1 or 0 */
+    val myVote: Int = 0,
+    /** Ask posts: the id of the comment the author marked as helpful, or empty */
+    val helped: String = "",
 )
+
+data class Gift(val id: String, val from: String, val fromName: String, val points: Int, val reason: String, val postId: String, val title: String, val ts: Long)
+
+data class Comment(val id: String, val uid: String, val name: String, val text: String, val ts: Long)
 
 data class Person(val uid: String, val name: String, val occupation: String, val aura: Int)
 
@@ -35,8 +41,10 @@ data class Person(val uid: String, val name: String, val occupation: String, val
  *   users/{uid}                 name, nameLower, occupation, aura          (readable by any signed-in user)
  *   users/{uid}/goals/{id}      the user's goals                           (private)
  *   users/{uid}/following/{id}  who the user follows                       (private)
- *   users/{uid}/posts/{id}      shared achievements                        (readable by any signed-in user)
- * Posts live under the user so the feed needs no composite index.
+ *   posts/{id}                  forum posts (done / ask)                   (readable by any signed-in user)
+ *   posts/{id}/votes/{uid}      {v: 1 | -1}
+ *   posts/{id}/comments/{cid}   {uid, name, text, ts}
+ * The feed is one orderBy(ts) query, so no composite index is needed.
  */
 class Cloud(private val ctx: Context) {
     private val auth get() = FirebaseAuth.getInstance()
@@ -94,32 +102,74 @@ class Cloud(private val ctx: Context) {
         }
     }
 
-    /** Idempotent: the post id is the goal id, so posting twice just rewrites the same post. */
-    suspend fun post(g: Goal, p: Profile) {
+    /** Create a Done post once. The id is stable, so posting twice never resets votes. */
+    suspend fun postDone(key: String, topic: String, title: String, detail: String, points: Int, ts: Long, p: Profile) {
         val u = uid ?: return
-        db.collection("users").document(u).collection("posts").document(g.id).set(
-            mapOf(
-                "name" to p.name, "occupation" to p.occupation, "title" to g.title, "metric" to g.metric.name,
-                "target" to g.target, "days" to g.days, "points" to g.awarded,
-                "ts" to (if (g.completedEpochDay >= 0) g.completedEpochDay * 86_400_000L + 43_200_000L else System.currentTimeMillis()),
-            )
-        ).await()
+        val ref = db.collection("posts").document("${u}_$key")
+        db.runTransaction { tx ->
+            if (!tx.get(ref).exists()) tx.set(ref, postMap(u, p, "done", topic, title, detail, points, ts))
+        }.await()
     }
 
-    /** An explicit post of a recorded activity: sport, distance, time and average heart rate. The route itself is never shared. */
-    suspend fun postActivity(r: Rec, p: Profile) {
+    suspend fun postAsk(topic: String, title: String, body: String, p: Profile) {
         val u = uid ?: return
-        db.collection("users").document(u).collection("posts").document("act_${r.id}").set(
-            mapOf(
-                "kind" to "activity", "name" to p.name, "occupation" to p.occupation, "title" to r.title, "sport" to r.sport,
-                "distM" to r.distM, "elapsedS" to r.elapsedS, "hrAvg" to r.merged.hrAvg, "points" to 0, "ts" to r.startMs,
-            )
-        ).await()
+        db.collection("posts").document().set(postMap(u, p, "ask", topic, title, body, 0, System.currentTimeMillis())).await()
     }
+
+    private fun postMap(u: String, p: Profile, type: String, topic: String, title: String, body: String, points: Int, ts: Long) = mapOf(
+        "uid" to u, "name" to p.name, "occupation" to p.occupation, "type" to type, "topic" to topic,
+        "title" to title.take(80), "body" to body.take(500), "points" to points, "ts" to ts,
+        "up" to 0, "down" to 0, "score" to 0, "comments" to 0,
+    )
+
+    suspend fun deletePost(id: String) { db.collection("posts").document(id).delete().await() }
 
     suspend fun unpostActivity(id: Long) {
         val u = uid ?: return
-        db.collection("users").document(u).collection("posts").document("act_$id").delete().await()
+        db.collection("posts").document("${u}_act_$id").delete().await()
+    }
+
+    /** Set this user's vote on a post: 1, -1, or 0 to remove. Reads the old vote and adjusts the counters in one transaction. */
+    suspend fun vote(postId: String, v: Int) {
+        val u = uid ?: return
+        val post = db.collection("posts").document(postId)
+        val mine = post.collection("votes").document(u)
+        db.runTransaction { tx ->
+            val old = (tx.get(mine).getLong("v") ?: 0L).toInt()
+            val snap = tx.get(post)
+            if (!snap.exists() || old == v) return@runTransaction
+            val up = (snap.getLong("up") ?: 0).toInt() - (if (old == 1) 1 else 0) + (if (v == 1) 1 else 0)
+            val down = (snap.getLong("down") ?: 0).toInt() - (if (old == -1) 1 else 0) + (if (v == -1) 1 else 0)
+            if (v == 0) tx.delete(mine) else tx.set(mine, mapOf("v" to v))
+            tx.update(post, mapOf("up" to up, "down" to down, "score" to up - down))
+        }.await()
+    }
+
+    suspend fun comments(postId: String): List<Comment> =
+        db.collection("posts").document(postId).collection("comments").orderBy("ts", Query.Direction.ASCENDING).limit(200).get().await().documents.map { d ->
+            Comment(d.id, d.getString("uid") ?: "", d.getString("name") ?: "", d.getString("text") ?: "", d.getLong("ts") ?: 0)
+        }
+
+    suspend fun addComment(postId: String, text: String, p: Profile) {
+        val u = uid ?: return
+        val post = db.collection("posts").document(postId)
+        val c = post.collection("comments").document()
+        db.runTransaction { tx ->
+            val snap = tx.get(post)
+            if (!snap.exists()) return@runTransaction
+            tx.set(c, mapOf("uid" to u, "name" to p.name, "text" to text.take(300), "ts" to System.currentTimeMillis()))
+            tx.update(post, "comments", (snap.getLong("comments") ?: 0) + 1)
+        }.await()
+    }
+
+    suspend fun deleteComment(postId: String, commentId: String) {
+        val post = db.collection("posts").document(postId)
+        val c = post.collection("comments").document(commentId)
+        db.runTransaction { tx ->
+            val snap = tx.get(post)
+            tx.delete(c)
+            if (snap.exists()) tx.update(post, "comments", maxOf(0L, (snap.getLong("comments") ?: 0) - 1))
+        }.await()
     }
 
     suspend fun following(): Set<String> {
@@ -135,21 +185,6 @@ class Cloud(private val ctx: Context) {
     suspend fun unfollow(other: String) {
         val u = uid ?: return
         db.collection("users").document(u).collection("following").document(other).delete().await()
-    }
-
-    /** A milestone from the ledger or a new level. Only title, detail and points are shared. Idempotent per [id]. */
-    suspend fun postEntry(id: String, kind: String, title: String, detail: String, points: Int, p: Profile) {
-        val u = uid ?: return
-        db.collection("users").document(u).collection("posts").document(id).set(
-            mapOf("kind" to kind, "name" to p.name, "occupation" to p.occupation, "title" to title, "detail" to detail, "points" to points, "ts" to System.currentTimeMillis())
-        ).await()
-    }
-
-    /** Give or take back props on a post. */
-    suspend fun setProps(owner: String, postId: String, give: Boolean) {
-        val u = uid ?: return
-        val d = db.collection("users").document(owner).collection("posts").document(postId).collection("props").document(u)
-        if (give) d.set(mapOf("ts" to System.currentTimeMillis())).await() else d.delete().await()
     }
 
     /** Users with the same occupation, for suggestions. */
@@ -170,35 +205,52 @@ class Cloud(private val ctx: Context) {
         db.collection("users").whereGreaterThan("aura", aura).count().get(com.google.firebase.firestore.AggregateSource.SERVER).await().count.toInt() + 1
     }.getOrDefault(0)
 
-    /** Latest posts from the people you follow and yourself, newest first. */
-    suspend fun feed(following: Set<String>): List<Post> {
-        val ids = (following + listOfNotNull(uid)).take(30)
-        return ids.flatMap { id ->
-            runCatching {
-                db.collection("users").document(id).collection("posts").orderBy("ts", Query.Direction.DESCENDING).limit(10).get().await().documents.map { d ->
-                    Post(
-                        d.id, id, d.getString("name") ?: "", d.getString("occupation") ?: "", d.getString("title") ?: "",
-                        d.getString("metric") ?: "", d.getDouble("target") ?: 0.0, (d.getLong("days") ?: 0).toInt(),
-                        (d.getLong("points") ?: 0).toInt(), d.getLong("ts") ?: 0,
-                        d.getString("kind") ?: "goal", d.getString("sport") ?: "", d.getDouble("distM") ?: 0.0,
-                        (d.getLong("elapsedS") ?: 0).toInt(), (d.getLong("hrAvg") ?: 0).toInt(), d.getString("detail") ?: "",
-                    )
-                }
-            }.getOrDefault(emptyList())
-        }.sortedByDescending { it.ts }.take(30).let { withProps(it) }
-    }
+    private fun post(d: com.google.firebase.firestore.DocumentSnapshot, mine: Int = 0) = Post(
+        d.id, d.getString("uid") ?: "", d.getString("name") ?: "", d.getString("occupation") ?: "",
+        d.getString("type") ?: "done", d.getString("topic") ?: "General", d.getString("title") ?: "", d.getString("body") ?: "",
+        (d.getLong("points") ?: 0).toInt(), d.getLong("ts") ?: 0, (d.getLong("up") ?: 0).toInt(), (d.getLong("down") ?: 0).toInt(),
+        (d.getLong("score") ?: 0).toInt(), (d.getLong("comments") ?: 0).toInt(), mine, d.getString("helped") ?: "",
+    )
 
-    /** Props counts for each post; if Firestore refuses, the counts stay at -1 and the UI hides them. */
-    private suspend fun withProps(posts: List<Post>): List<Post> = coroutineScope {
+    /** The latest 100 posts, newest first, each with this user's own vote. Filtering and ranking happen on the client. */
+    suspend fun feed(): List<Post> = coroutineScope {
         val me = uid
-        posts.map { p ->
+        db.collection("posts").orderBy("ts", Query.Direction.DESCENDING).limit(100).get().await().documents.map { d ->
             async {
-                runCatching {
-                    val docs = db.collection("users").document(p.uid).collection("posts").document(p.id).collection("props").get().await().documents
-                    p.copy(props = docs.size, propped = docs.any { it.id == me })
-                }.getOrDefault(p)
+                val mine = if (me == null) 0 else runCatching { d.reference.collection("votes").document(me).get().await().getLong("v")?.toInt() ?: 0 }.getOrDefault(0)
+                post(d, mine)
             }
         }.awaitAll()
+    }
+
+    /** This user's own posts, for the aura earned from upvotes. */
+    suspend fun myPosts(): List<Post> {
+        val u = uid ?: return emptyList()
+        return db.collection("posts").whereEqualTo("uid", u).limit(EarnRules.POSTS_SCAN.toLong()).get().await().documents.map { post(it) }
+    }
+
+    suspend fun gifts(): List<Gift> {
+        val u = uid ?: return emptyList()
+        return db.collection("users").document(u).collection("gifts").get().await().documents.map { d ->
+            Gift(d.id, d.getString("from") ?: "", d.getString("fromName") ?: "", (d.getLong("points") ?: 0).toInt(), d.getString("reason") ?: "",
+                d.getString("postId") ?: "", d.getString("title") ?: "", d.getLong("ts") ?: 0)
+        }
+    }
+
+    /** Aura for another user. The id is fixed per giver and post, so it cannot be sent twice. */
+    suspend fun sendGift(to: String, id: String, points: Int, reason: String, postId: String, title: String, fromName: String) {
+        val u = uid ?: return
+        db.collection("users").document(to).collection("gifts").document(id).set(
+            mapOf("from" to u, "fromName" to fromName, "points" to points, "reason" to reason, "postId" to postId, "title" to title.take(80), "ts" to System.currentTimeMillis())
+        ).await()
+    }
+
+    suspend fun deleteGift(to: String, id: String) {
+        db.collection("users").document(to).collection("gifts").document(id).delete().await()
+    }
+
+    suspend fun setHelped(postId: String, commentId: String) {
+        db.collection("posts").document(postId).update("helped", commentId).await()
     }
 
     suspend fun board(): List<Person> =

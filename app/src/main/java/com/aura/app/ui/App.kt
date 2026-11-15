@@ -125,6 +125,8 @@ fun App(vm: AuraViewModel) {
                 when (s) {
                     MoveScreen.Plan -> PlanScreen(onBack = { screen = null }, onStart = { screen = MoveScreen.Record })
                     MoveScreen.Ledger -> LedgerScreen(ui, vm, onBack = { screen = null })
+                    MoveScreen.Trends -> TrendsScreen(vm, ui, onBack = { screen = null })
+                    is MoveScreen.Thread -> ThreadScreen(vm, ui, s.id, onBack = { screen = null })
                     MoveScreen.Record -> RecordScreen(onBack = { screen = null }, onSaved = { screen = MoveScreen.Detail(it); vm.refresh() })
                     is MoveScreen.Detail -> DetailScreen(vm, ui, s.id, onBack = { screen = null; vm.refresh() })
                     null -> Shell(vm, ui, tab, onTab = { tab = it }, onAdd = { adding = it }, onScreen = { screen = it })
@@ -167,10 +169,10 @@ private fun Pages(modifier: Modifier, vm: AuraViewModel, ui: UiState, tab: Tab, 
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
             Column(Modifier.widthIn(max = 640.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(top = 20.dp, bottom = 36.dp)) {
                 when (t) {
-                    Tab.TODAY -> Today(vm, ui, onAdd, goGoals = { onTab(Tab.GOALS) }, onLedger = { onScreen(MoveScreen.Ledger) })
+                    Tab.TODAY -> Today(vm, ui, onAdd, goGoals = { onTab(Tab.GOALS) }, onLedger = { onScreen(MoveScreen.Ledger) }, onTrends = { onScreen(MoveScreen.Trends) })
                     Tab.MOVE -> MoveHome(onPlan = { onScreen(MoveScreen.Plan) }, onRecord = { onScreen(MoveScreen.Record) }, onOpen = { onScreen(MoveScreen.Detail(it)) })
                     Tab.GOALS -> Goals(ui.goals, onAdd = { onAdd(Triple("", Metric.STEPS, Metric.STEPS.defaultTarget)) }, onDelete = vm::deleteGoal)
-                    Tab.CIRCLE -> Circle(vm, ui)
+                    Tab.CIRCLE -> Circle(vm, ui, onThread = { onScreen(MoveScreen.Thread(it)) })
                     Tab.YOU -> You(vm, ui, onLedger = { onScreen(MoveScreen.Ledger) })
                 }
             }
@@ -294,7 +296,7 @@ private fun Onboarding(onDone: (Profile) -> Unit) {
 // ---------- today ----------
 
 @Composable
-private fun Today(vm: AuraViewModel, ui: UiState, onAdd: (Triple<String, Metric, Double>) -> Unit, goGoals: () -> Unit, onLedger: () -> Unit) {
+private fun Today(vm: AuraViewModel, ui: UiState, onAdd: (Triple<String, Metric, Double>) -> Unit, goGoals: () -> Unit, onLedger: () -> Unit, onTrends: () -> Unit) {
     val hello = remember { when (LocalTime.now().hour) { in 5..11 -> "Good morning"; in 12..16 -> "Good afternoon"; else -> "Good evening" } }
     val date = remember { LocalDate.now().format(DateTimeFormatter.ofPattern("EEEE d MMMM")) }
 
@@ -307,7 +309,7 @@ private fun Today(vm: AuraViewModel, ui: UiState, onAdd: (Triple<String, Metric,
     Reveal(1) { AuraHalo(ui.aura) }
     if (ui.healthOk && ui.today.isNotEmpty()) {
         Gap(20)
-        Reveal(1) { TodayStrip(ui.today, ui.streaks, onLedger) }
+        Reveal(1) { TodayStrip(ui.today, ui.streaks, onLedger, onTrends) }
     }
     Connections(vm, ui)
     Gap(32)

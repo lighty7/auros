@@ -6,7 +6,8 @@ An Android app that turns what your watch and phone already measure into goals y
 - **Verified goals.** Pick a target (8,000 steps, 7 hours of sleep, under 3 hours of screen time...) for a number of days. Aura checks it against the data and awards aura points. Nothing is self-reported.
 - **Body and screen.** The day's heart rate laid over the apps you had open, each app's average heart rate, and last night's sleep stages with your phone use around it.
 - **Move.** Plan a loop or a route to a dropped pin, record it with GPS, then see the route coloured by the heart rate your watch measured.
-- **Circle.** Sign in with Google to follow friends, post finished goals and activities, and climb the board. Raw health data never leaves the phone.
+- **Circle.** A very light forum: Done posts (from your ledger, goals and activities) and Ask posts (advice, 80 character title, 500 character body), each with one topic, votes and comments. Feed, Trending, Board and Mine. Raw health data never leaves the phone.
+- **Trends.** Week bars, a four-week consistency grid, aura over time and this week against last, opened from Today.
 
 Android 13+ only. The UI follows the phone's light or dark mode.
 
@@ -18,7 +19,9 @@ Four daily earnings, judged from your watch and phone: sleep between 7h and 9h, 
 
 Anything you earn can be shared as a 1080x1920 image card: a ledger entry, a streak, a completed goal, an activity or your level. The card shows the number, a title, one detail, your name, level and total. It never includes a route, map or location. From the share sheet you can send it to WhatsApp, Instagram or Snapchat (only installed apps are listed), open the system chooser, or save it to Pictures/Aura. Snapchat receives the image only, so it opens its send-to screen rather than a chat message.
 
-In Circle you can post streak milestones, full days and new levels to your feed, and give props to other people's posts. Props live at `users/{uid}/posts/{postId}/props/{giverUid}`, so publish the updated `firestore.rules`.
+Circle is text only. Topics: Sleep, Steps, Training, Screen time, Food, Mind, General. Posts live in `posts/{id}` with votes in `posts/{id}/votes/{uid}` and comments in `posts/{id}/comments/{cid}`; counters are updated in transactions. Trending ranks the last 7 days by `score / (hours + 2)^1.5`.
+
+Aura from Circle (constants in `EarnRules`): each of your posts earns +1 per net upvote up to +20; marking a comment on your Ask as helpful gives its author +10; "Give 5" costs you 5 and gives the author 5 (3 a day, once per post, needs 5 aura). Cross-user awards go through `users/{uid}/gifts/{id}` with fixed ids. Publish the updated `firestore.rules` or Circle shows "Circle needs the updated Firestore rules."
 
 ## Building
 

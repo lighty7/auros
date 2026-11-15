@@ -30,6 +30,22 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.text.style.TextAlign
+import com.aura.app.data.TOPICS
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -56,6 +72,8 @@ import androidx.compose.ui.unit.sp
 import com.aura.app.AuraViewModel
 import com.aura.app.UiState
 import com.aura.app.data.Aura
+import com.aura.app.data.Earn
+import java.time.LocalDate
 import com.aura.app.data.EarnRules
 import com.aura.app.data.Metric
 import com.aura.app.data.Person
@@ -66,35 +84,31 @@ import kotlinx.coroutines.launch
 import kotlin.math.cos
 import kotlin.math.sin
 
-private enum class Pane(val label: String) { FEED("Feed"), BOARD("Board"), FIND("Find"), MINE("Mine") }
+private enum class Pane(val label: String) { FEED("Feed"), TRENDING("Trending"), BOARD("Board"), MINE("Mine") }
 
 internal fun UiState.sharer() = Sharer(profile.name, profile.occupation, aura)
 
 @Composable
-fun Circle(vm: AuraViewModel, ui: UiState) {
+fun Circle(vm: AuraViewModel, ui: UiState, onThread: (String) -> Unit) {
     var pane by rememberSaveable { mutableStateOf(Pane.FEED) }
     Text("Circle", style = T.title)
     Gap(6)
-    Text("What you and the people you follow have earned.", style = T.label)
+    Text("Ask, share what you finished, and compare notes.", style = T.label)
     Gap(20)
-    if (!ui.signedIn) {
-        SignIn(vm, ui)
-        Gap(28)
-        Mine(vm, ui)
-        return
-    }
-    Seg(Pane.entries.map { it to it.label }, pane) { pane = it; if (it != Pane.FIND && it != Pane.MINE) vm.loadSocial() }
+    Seg(Pane.entries.map { it to it.label }, pane) { pane = it; if (ui.signedIn && it != Pane.MINE) vm.loadSocial() }
     Gap(18)
-    if (ui.cloudError.isNotBlank()) { Text(ui.cloudError, style = T.label.copy(color = C.bad)); Gap(10) }
+    if (ui.signedIn && ui.cloudError.isNotBlank()) { Text(ui.cloudError, style = T.label.copy(color = C.bad)); Gap(10) }
     AnimatedContent(
         targetState = pane, label = "pane",
         transitionSpec = { fadeIn(tween(240, delayMillis = 60)) togetherWith fadeOut(tween(120)) },
     ) { p ->
         Column(Modifier.fillMaxWidth()) {
             when (p) {
-                Pane.FEED -> Feed(vm, ui)
-                Pane.BOARD -> Board(vm, ui)
-                Pane.FIND -> Find(vm, ui)
+                Pane.FEED, Pane.TRENDING, Pane.BOARD -> if (!ui.signedIn) SignIn(vm, ui) else when (p) {
+                    Pane.FEED -> Feed(vm, ui, onThread, trending = false)
+                    Pane.TRENDING -> Feed(vm, ui, onThread, trending = true)
+                    else -> Board(vm, ui)
+                }
                 Pane.MINE -> Mine(vm, ui)
             }
         }
@@ -129,72 +143,179 @@ internal fun describe(metric: String, days: Int, target: Double): String {
     return "$days days of ${m.label.lowercase()} ${if (m.lowerIsBetter) "under" else "over"} ${m.fmt(target)} ${m.unit}"
 }
 
-// ---------- feed ----------
+// ---------- feed, trending and threads ----------
 
 @Composable
-private fun Feed(vm: AuraViewModel, ui: UiState) {
-    if (ui.feed.isEmpty()) Text("Nothing here yet. Follow someone under Find, or complete a goal of your own.", style = T.body)
-    ui.feed.forEachIndexed { i, p -> Reveal(i) { FeedCard(p, ui, vm); Gap(10) } }
+private fun Feed(vm: AuraViewModel, ui: UiState, onThread: (String) -> Unit, trending: Boolean) {
+    var topic by rememberSaveable { mutableStateOf("") }
+    var following by rememberSaveable { mutableStateOf(false) }
+    var composing by remember { mutableStateOf(false) }
+    val now = System.currentTimeMillis()
+    val posts = ui.feed
+        .filter { topic.isEmpty() || it.topic == topic }
+        .filter { !following || it.uid == ui.myUid || it.uid in ui.following }
+        .let { list ->
+            if (!trending) list.sortedByDescending { it.ts }
+            else list.filter { now - it.ts < 7 * 86_400_000L }
+                .sortedByDescending { it.score / Math.pow((now - it.ts) / 3_600_000.0 + 2.0, 1.5) }
+        }
+    Btn("New post", { composing = true }, small = true)
+    Gap(14)
+    Seg(listOf(false to "Everyone", true to "Following"), following) { following = it }
+    Gap(12)
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Chip("All", topic.isEmpty()) { topic = "" }
+        TOPICS.forEach { t -> Chip(t, topic == t) { topic = t } }
+    }
+    Gap(16)
+    if (posts.isEmpty()) Text(
+        if (trending) "Nothing has picked up this week yet." else "Nothing here yet. Ask something, or post what you have finished.",
+        style = T.body,
+    )
+    posts.forEachIndexed { i, p -> Reveal(minOf(i, 5)) { PostCard(p, ui, vm, onOpen = { onThread(p.id) }); Gap(10) } }
+    if (composing) NewPost(vm, ui.cloudError, topic.ifEmpty { "General" }) { composing = false }
 }
 
 @Composable
-private fun FeedCard(p: Post, ui: UiState, vm: AuraViewModel) {
-    val tone: Color; val label: String; val big: String; val unit: String; val line: String
-    when (p.kind) {
-        "activity" -> {
-            tone = C.good; label = "Activity"; big = km(p.distM); unit = "km"
-            line = "${clock(p.elapsedS)} · ${pace(p.sport, p.distM, p.elapsedS)}" + if (p.hrAvg > 0) " · ${p.hrAvg} bpm average" else ""
-        }
-        "streak" -> { tone = C.butter; label = "Streak"; big = "+${p.points}"; unit = "aura"; line = p.detail }
-        "full" -> { tone = C.butter; label = "Full day"; big = "+${p.points}"; unit = "aura"; line = p.detail }
-        "level" -> { tone = C.ink; label = "Level"; big = "${p.points}"; unit = "aura"; line = p.detail }
-        else -> { tone = C.accent; label = "Goal"; big = "+${p.points}"; unit = "aura"; line = describe(p.metric, p.days, p.target) }
-    }
-    val shape = RoundedCornerShape(18.dp)
-    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).clip(shape).background(C.surface).border(1.dp, C.line, shape)) {
-        Box(Modifier.width(4.dp).fillMaxHeight().background(tone))
-        Column(Modifier.weight(1f).padding(16.dp)) {
-            Row(verticalAlignment = Alignment.Top) {
-                Column(Modifier.weight(1f)) {
-                    Caps("${if (p.uid == ui.myUid) "You" else p.name} · $label · ${ago(p.ts)}")
-                    Gap(6)
-                    Text(p.title, style = T.head)
-                    if (line.isNotBlank()) { Gap(2); Text(line, style = T.label) }
-                }
-                GapW(12)
-                Column(horizontalAlignment = Alignment.End) { Text(big, style = T.num.copy(color = tone)); Caps(unit) }
-            }
-            if (p.props >= 0) { Gap(12); PropsBtn(p.props, p.propped) { vm.toggleProps(p) } }
-        }
-    }
-}
-
-@Composable
-private fun PropsBtn(count: Int, on: Boolean, onClick: () -> Unit) {
-    val s = remember { Animatable(1f) }
-    val scope = rememberCoroutineScope()
-    val shape = RoundedCornerShape(50)
-    Row(
-        Modifier.graphicsLayer { scaleX = s.value; scaleY = s.value }
-            .clip(shape).background(if (on) C.accent.copy(alpha = 0.14f) else Color.Transparent)
-            .border(1.dp, if (on) C.accent else C.line, shape)
-            .clickable(role = Role.Button) {
-                onClick()
-                scope.launch { s.animateTo(1.28f, tween(110)); s.animateTo(1f, spring(dampingRatio = 0.4f, stiffness = 500f)) }
-            }
-            .padding(horizontal = 14.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+private fun VoteBtn(up: Boolean, on: Boolean, label: String, onClick: () -> Unit) {
+    val tone = if (on) (if (up) C.accent else C.ink) else C.muted
+    Box(
+        Modifier.size(44.dp).clip(RoundedCornerShape(12.dp))
+            .clickable(role = Role.Button, onClick = onClick).semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
     ) {
-        Text("Props", style = T.label.copy(color = if (on) C.accent else C.ink, fontWeight = FontWeight.SemiBold))
-        GapW(8)
-        AnimatedContent(
-            targetState = count, label = "props",
-            transitionSpec = {
-                val up = targetState > initialState
-                (slideInVertically(tween(180)) { if (up) it else -it } + fadeIn(tween(180))) togetherWith
-                    (slideOutVertically(tween(180)) { if (up) -it else it } + fadeOut(tween(120)))
-            },
-        ) { n -> Text("$n", style = T.label.copy(color = if (on) C.accent else C.muted, fontWeight = FontWeight.SemiBold)) }
+        Canvas(Modifier.size(16.dp)) {
+            val w = size.width; val h = size.height; val sw = 1.8.dp.toPx()
+            val d = if (up) 1f else -1f
+            fun y(v: Float) = h / 2f - d * (v - 0.5f) * h
+            fun l(x0: Float, y0: Float, x1: Float, y1: Float) = drawLine(tone, Offset(x0 * w, y(y0)), Offset(x1 * w, y(y1)), sw, StrokeCap.Round)
+            l(0.5f, 0.95f, 0.5f, 0.1f); l(0.5f, 0.1f, 0.12f, 0.5f); l(0.5f, 0.1f, 0.88f, 0.5f)
+        }
+    }
+}
+
+@Composable
+private fun Votes(p: Post, vm: AuraViewModel) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        VoteBtn(true, p.myVote == 1, "Upvote") { vm.vote(p, 1) }
+        Text("${p.score}", style = T.head.copy(color = if (p.myVote == 1) C.accent else C.ink), modifier = Modifier.widthIn(min = 28.dp), textAlign = TextAlign.Center)
+        VoteBtn(false, p.myVote == -1, "Downvote") { vm.vote(p, -1) }
+    }
+}
+
+@Composable
+private fun PostCard(p: Post, ui: UiState, vm: AuraViewModel, onOpen: (() -> Unit)?) {
+    val ask = p.type == "ask"
+    Panel(onClick = onOpen, pad = 16) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Caps(if (ask) "Ask" else "Done", color = if (ask) C.accent else C.good)
+            GapW(8)
+            Caps("${if (p.uid == ui.myUid) "You" else p.name} · ${p.topic} · ${ago(p.ts)}", Modifier.weight(1f))
+        }
+        Gap(6)
+        Text(p.title, style = T.head)
+        if (p.body.isNotBlank()) {
+            Gap(4)
+            if (onOpen != null) Text(p.body, style = T.label, maxLines = 3, overflow = TextOverflow.Ellipsis) else Text(p.body, style = T.body)
+        }
+        if (!ask && p.points > 0) { Gap(6); Text("+${p.points} aura", style = T.label.copy(color = C.accent)) }
+        Gap(8)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Votes(p, vm)
+            if (p.uid != ui.myUid) {
+                val block = Earn.giveBlock(ui.ledger, ui.aura, p.id, LocalDate.now().toEpochDay())
+                GapW(6)
+                Btn(block ?: "Give 5", { vm.give(p) }, kind = Kind.Quiet, small = true, enabled = block == null)
+            }
+            Spacer(Modifier.weight(1f))
+            Caps("${p.comments} ${if (p.comments == 1) "comment" else "comments"}")
+        }
+    }
+}
+
+@Composable
+private fun TextBox(value: String, onChange: (String) -> Unit, label: String, minLines: Int, modifier: Modifier = Modifier) {
+    OutlinedTextField(
+        value, onChange, modifier = modifier, label = { Text(label) }, minLines = minLines, shape = RoundedCornerShape(14.dp), textStyle = T.body,
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = C.ink, unfocusedBorderColor = C.line, focusedLabelColor = C.ink, unfocusedLabelColor = C.muted,
+            cursorColor = C.accent, focusedTextColor = C.ink, unfocusedTextColor = C.ink,
+        ),
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun NewPost(vm: AuraViewModel, error: String, startTopic: String, onDismiss: () -> Unit) {
+    var topic by remember { mutableStateOf(startTopic) }
+    var title by remember { mutableStateOf("") }
+    var body by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    LaunchedEffect(error) { busy = false }
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = C.surface, contentColor = C.ink, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 22.dp).padding(bottom = 28.dp)) {
+            Caps("Ask")
+            Text("Ask for advice", style = T.title)
+            Gap(16)
+            Caps("Topic")
+            Gap(10)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                TOPICS.forEach { t -> Chip(t, topic == t) { topic = t } }
+            }
+            Gap(18)
+            TextBox(title, { title = it.take(80) }, "Title", 1, Modifier.fillMaxWidth())
+            Gap(4)
+            Caps("${title.length} / 80")
+            Gap(12)
+            TextBox(body, { body = it.take(500) }, "Details", 4, Modifier.fillMaxWidth())
+            Gap(4)
+            Caps("${body.length} / 500")
+            Gap(18)
+            Btn(if (busy) "Posting..." else "Post", { busy = true; vm.postAsk(topic, title, body) { onDismiss() } }, enabled = title.isNotBlank() && !busy, modifier = Modifier.fillMaxWidth())
+        }
+    }
+}
+
+@Composable
+fun ThreadScreen(vm: AuraViewModel, ui: UiState, id: String, onBack: () -> Unit) {
+    LaunchedEffect(id) { vm.openThread(id) }
+    var text by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    LaunchedEffect(ui.cloudError) { busy = false }
+    val post = ui.feed.firstOrNull { it.id == id }
+    ScreenFrame("Thread", onBack) {
+        Column(Modifier.imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp)) {
+            if (post == null) { Text("This post is no longer there.", style = T.body); return@Column }
+            PostCard(post, ui, vm, onOpen = null)
+            if (post.uid == ui.myUid) { Gap(8); Btn("Delete post", { vm.deletePost(post.id, onBack) }, kind = Kind.Quiet, small = true, tint = C.bad, flush = true) }
+            if (ui.cloudError.isNotBlank()) { Gap(10); Text(ui.cloudError, style = T.label.copy(color = C.bad)) }
+            Gap(22)
+            Caps("Comments")
+            Gap(6)
+            val list = if (ui.commentsFor == id) ui.comments else emptyList()
+            if (list.isEmpty()) Text("No comments yet.", style = T.label)
+            list.forEachIndexed { i, c ->
+                if (i > 0) Rule()
+                Column(Modifier.padding(vertical = 12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Caps("${if (c.uid == ui.myUid) "You" else c.name} · ${ago(c.ts)}", Modifier.weight(1f))
+                        if (c.uid == ui.myUid) Btn("Delete", { vm.deleteComment(id, c.id) }, kind = Kind.Quiet, small = true, tint = C.bad, flush = true)
+                    }
+                    Gap(4)
+                    Text(c.text, style = T.body)
+                    if (post.helped == c.id) { Gap(4); Caps("Helped", color = C.good) }
+                    if (post.type == "ask" && post.uid == ui.myUid && c.uid != ui.myUid) {
+                        Btn(if (post.helped == c.id) "Unmark helped" else "Mark as helped", { vm.markHelped(post, c) }, kind = Kind.Quiet, small = true, flush = true)
+                    }
+                }
+            }
+            Gap(16)
+            TextBox(text, { text = it.take(300) }, "Add a comment", 2, Modifier.fillMaxWidth())
+            Gap(4)
+            Caps("${text.length} / 300")
+            Gap(12)
+            Btn(if (busy) "Posting..." else "Comment", { busy = true; vm.addComment(id, text) { text = ""; busy = false } }, small = true, enabled = text.isNotBlank() && !busy)
+        }
     }
 }
 
@@ -221,10 +342,21 @@ private fun PersonRow(rank: Int?, p: Person, ui: UiState, vm: AuraViewModel) {
 @Composable
 private fun Board(vm: AuraViewModel, ui: UiState) {
     var following by rememberSaveable { mutableStateOf(false) }
-    Seg(listOf(false to "Everyone", true to "Following"), following) { following = it }
+    var finding by rememberSaveable { mutableStateOf(false) }
+    if (finding) {
+        Btn("Back to board", { finding = false }, kind = Kind.Quiet, small = true, flush = true)
+        Gap(10)
+        Find(vm, ui)
+        return
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Seg(listOf(false to "Everyone", true to "Following"), following, Modifier.weight(1f)) { following = it }
+        GapW(10)
+        Btn("Find people", { finding = true }, kind = Kind.Outline, small = true)
+    }
     Gap(20)
     val list = if (following) ui.boardFollowing else ui.board
-    if (list.isEmpty()) { Text(if (following) "Follow someone under Find and they show up here." else "No one is on the board yet.", style = T.body); return }
+    if (list.isEmpty()) { Text(if (following) "Follow someone under Find people and they show up here." else "No one is on the board yet.", style = T.body); return }
     Podium(list.take(3), ui.myUid, key = following)
     Gap(8)
     list.drop(3).forEachIndexed { i, p -> Reveal(i) { Rule(); PersonRow(i + 4, p, ui, vm) } }
@@ -312,7 +444,7 @@ internal fun Mine(vm: AuraViewModel, ui: UiState) {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Btn("Share", { card = ShareCard.Level }, kind = Kind.Outline, small = true)
             if (ui.signedIn) {
-                val posted = ui.feed.any { it.uid == ui.myUid && it.id == "lvl_$lvl" } || "lvl_$lvl" in sent
+                val posted = ui.feed.any { it.id == "${ui.myUid}_lvl_$lvl" } || "lvl_$lvl" in sent
                 if (posted) Caps("Level $lvl posted", Modifier.align(Alignment.CenterVertically))
                 else Btn("Post level to Circle", { sent = sent + "lvl_$lvl"; vm.postLevel(lvl, ui.aura) }, kind = Kind.Quiet, small = true)
             }
@@ -343,6 +475,21 @@ internal fun Mine(vm: AuraViewModel, ui: UiState) {
         }
     }
 
+    val upvoted = ui.myPosts.filter { it.score > 0 }.sortedByDescending { it.ts }.take(5)
+    if (upvoted.isNotEmpty()) {
+        Gap(24)
+        Caps("Your posts")
+        Gap(2)
+        upvoted.forEachIndexed { i, p ->
+            if (i > 0) Rule()
+            Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(p.title, style = T.body, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                GapW(10)
+                Text("+${p.score.coerceIn(0, EarnRules.VOTE_CAP)} from upvotes", style = T.label.copy(color = C.accent))
+            }
+        }
+    }
+
     val recent = ui.ledger.filter { it.points > 0 }.take(5)
     if (recent.isNotEmpty()) {
         Gap(24)
@@ -351,7 +498,7 @@ internal fun Mine(vm: AuraViewModel, ui: UiState) {
         recent.forEachIndexed { i, e ->
             if (i > 0) Rule()
             val canPost = ui.signedIn && (e.kind.startsWith("STREAK_") || e.kind == "FULL")
-            val posted = ui.feed.any { it.uid == ui.myUid && it.id == entryId(e) } || entryId(e) in sent
+            val posted = ui.feed.any { it.id == "${ui.myUid}_${entryId(e)}" } || entryId(e) in sent
             EarnedRow(e, onShare = { card = e.toCard() }, onPost = if (canPost) ({ sent = sent + entryId(e); vm.postEntry(e) }) else null, posted = posted)
         }
     }

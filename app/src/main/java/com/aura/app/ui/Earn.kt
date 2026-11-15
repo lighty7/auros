@@ -42,7 +42,7 @@ internal fun Earned.toCard(): ShareCard {
 
 /** Today's four daily earnings with progress, directly under the halo. */
 @Composable
-fun TodayStrip(items: List<TodayItem>, streaks: Map<String, Int>, onLedger: () -> Unit) {
+fun TodayStrip(items: List<TodayItem>, streaks: Map<String, Int>, onLedger: () -> Unit, onTrends: () -> Unit) {
     Caps("Today")
     Gap(8)
     items.forEachIndexed { i, it ->
@@ -60,7 +60,11 @@ fun TodayStrip(items: List<TodayItem>, streaks: Map<String, Int>, onLedger: () -
         Meter(it.progress, color = if (over) C.bad else if (it.earned) C.accent else C.muted, height = 4)
     }
     Gap(14)
-    Btn("How you earned it", onLedger, kind = Kind.Quiet, small = true, flush = true)
+    Row {
+        Btn("How you earned it", onLedger, kind = Kind.Quiet, small = true, flush = true)
+        GapW(20)
+        Btn("Trends", onTrends, kind = Kind.Quiet, small = true, flush = true)
+    }
 }
 
 /** The "+10": one scale pulse the moment it becomes earned. */
@@ -94,6 +98,9 @@ private val RULES = listOf(
     "A missed day resets that streak.",
     "After two quiet days in a row, aura cools by 5 a day, never below the start of your level.",
     "Completed goals count too.",
+    "Upvotes: each of your posts earns +1 aura per net upvote, up to +20 a post.",
+    "Helped: when you mark a comment on your Ask as helpful, its author earns +10.",
+    "Give 5: costs you 5 aura and gives the author of a post 5. Up to 3 a day, once per post.",
 )
 
 @Composable
@@ -110,7 +117,7 @@ fun LedgerScreen(ui: UiState, vm: AuraViewModel, onBack: () -> Unit) {
             Gap(10)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Btn("Share", { card = ShareCard.Level }, kind = Kind.Outline, small = true)
-                if (ui.signedIn && level > 1 && "lvl_$level" !in sent && ui.feed.none { it.uid == ui.myUid && it.id == "lvl_$level" })
+                if (ui.signedIn && level > 1 && "lvl_$level" !in sent && ui.feed.none { it.id == "${ui.myUid}_lvl_$level" })
                     Btn("Post level to Circle", { sent = sent + "lvl_$level"; vm.postLevel(level, ui.aura) }, kind = Kind.Quiet, small = true)
             }
             Gap(16)
@@ -135,7 +142,7 @@ fun LedgerScreen(ui: UiState, vm: AuraViewModel, onBack: () -> Unit) {
                     val id = "ent_${e.epochDay}_${e.kind}"
                     val canPost = ui.signedIn && (e.kind.startsWith("STREAK_") || e.kind == "FULL")
                     EarnedRow(e, onShare = { card = e.toCard() }, onPost = if (canPost) ({ sent = sent + id; vm.postEntry(e) }) else null,
-                        posted = id in sent || ui.feed.any { it.uid == ui.myUid && it.id == id })
+                        posted = id in sent || ui.feed.any { it.id == "${ui.myUid}_$id" })
                 }
             }
             Gap(24)

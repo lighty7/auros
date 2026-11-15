@@ -16,6 +16,10 @@ import kotlinx.coroutines.sync.withLock
 import com.aura.app.data.Goal
 import com.aura.app.data.Person
 import com.aura.app.data.Post
+import com.aura.app.data.Comment
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.aura.app.data.GoalProgress
 import com.aura.app.data.Metric
 import com.aura.app.data.Profile
@@ -53,6 +57,14 @@ data class UiState(
     val email: String = "",
     val myUid: String = "",
     val feed: List<Post> = emptyList(),
+    /** comments of the open thread, oldest first */
+    val comments: List<Comment> = emptyList(),
+    val commentsFor: String = "",
+    /** the last 28 days for the Trends page; days without data are absent or hold nulls */
+    val trends: Map<LocalDate, Day> = emptyMap(),
+    val trendsBusy: Boolean = false,
+    /** this user's own posts, for the aura earned from upvotes */
+    val myPosts: List<Post> = emptyList(),
     val board: List<Person> = emptyList(),
     val results: List<Person> = emptyList(),
     val following: Set<String> = emptySet(),
@@ -82,7 +94,19 @@ class AuraViewModel(app: Application) : AndroidViewModel(app) {
     private val _ui = MutableStateFlow(UiState(profile = store.profile(), signedIn = cloud.uid != null, email = cloud.email ?: "", myUid = cloud.uid ?: ""))
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 
-    private fun err(e: Throwable) { _ui.value = _ui.value.copy(cloudBusy = false, cloudError = e.message ?: e.javaClass.simpleName) }
+    private fun err(e: Throwable) {
+        val denied = e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED
+        _ui.value = _ui.value.copy(cloudBusy = false, cloudError = if (denied) "Circle needs the updated Firestore rules." else e.message ?: e.javaClass.simpleName)
+    }
+
+    private fun topicOfKind(kind: String): String {
+        val k = if (kind.startsWith("STREAK_")) kind.split("_").getOrElse(1) { "" } else kind
+        return when (k) { "REST" -> "Sleep"; "STEPS" -> "Steps"; "MOVE" -> "Training"; "FOCUS" -> "Screen time"; else -> "General" }
+    }
+
+    private fun topicOfMetric(m: Metric) = when (m) {
+        Metric.SLEEP -> "Sleep"; Metric.STEPS, Metric.DISTANCE -> "Steps"; Metric.EXERCISE, Metric.CALORIES -> "Training"; Metric.SCREEN -> "Screen time"
+    }
 
     fun saveProfile(p: Profile) {
         store.saveProfile(p)
@@ -108,7 +132,7 @@ class AuraViewModel(app: Application) : AndroidViewModel(app) {
 
     fun signOut() {
         cloud.signOut()
-        _ui.value = _ui.value.copy(signedIn = false, email = "", myUid = "", feed = emptyList(), board = emptyList(), results = emptyList(), following = emptySet(), boardFollowing = emptyList(), similar = emptyList(), myRank = 0)
+        _ui.value = _ui.value.copy(signedIn = false, email = "", myUid = "", feed = emptyList(), comments = emptyList(), board = emptyList(), results = emptyList(), following = emptySet(), boardFollowing = emptyList(), similar = emptyList(), myRank = 0)
     }
 
     /** Push profile, aura and completed goals (as shareable posts) to the account. */
@@ -116,14 +140,18 @@ class AuraViewModel(app: Application) : AndroidViewModel(app) {
         runCatching {
             val goals = store.goals()
             cloud.pushProfile(store.profile(), store.earnState().total)
-            goals.filter { it.awarded > 0 }.forEach { cloud.post(it, store.profile()) }
+            goals.filter { it.awarded > 0 }.forEach {
+                val ts = if (it.completedEpochDay >= 0) it.completedEpochDay * 86_400_000L + 43_200_000L else System.currentTimeMillis()
+                cloud.postDone(it.id, topicOfMetric(it.metric), it.title, com.aura.app.ui.describe(it.metric.name, it.days, it.target), it.awarded, ts, store.profile())
+            }
         }.onFailure(::err)
     }
 
     /** Post (or take back) a recorded activity. [done] gets true on success. */
     fun postActivity(r: com.aura.app.data.Rec, post: Boolean, done: (Boolean) -> Unit) {
         viewModelScope.launch {
-            val ok = runCatching { if (post) cloud.postActivity(r, store.profile()) else cloud.unpostActivity(r.id) }
+            val ok = runCatching { if (post) cloud.postDone("act_${r.id}", "Training", r.title,
+                "${com.aura.app.ui.km(r.distM)} km, ${com.aura.app.ui.clock(r.elapsedS)}, ${com.aura.app.ui.pace(r.sport, r.distM, r.elapsedS)}", 0, r.startMs, store.profile()) else cloud.unpostActivity(r.id) }
                 .onFailure(::err).isSuccess
             if (ok) { ActivityStore(getApplication()).setPosted(r.id, post); loadSocial() }
             done(ok)
@@ -135,7 +163,7 @@ class AuraViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val f = cloud.following()
                 val board = cloud.board()
-                _ui.value = _ui.value.copy(following = f, feed = cloud.feed(f), board = board)
+                _ui.value = _ui.value.copy(following = f, feed = cloud.feed(), board = board)
                 val me = cloud.uid
                 val aura = _ui.value.aura
                 val rank = board.indexOfFirst { it.uid == me }.let { if (it >= 0) it + 1 else cloud.rankOf(aura) }
@@ -146,26 +174,70 @@ class AuraViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Give or remove props; the count updates at once and rolls back if Firestore refuses. */
-    fun toggleProps(p: Post) {
-        val give = !p.propped
-        fun set(on: Boolean, n: Int) = _ui.update { s -> s.copy(feed = s.feed.map { if (it.uid == p.uid && it.id == p.id) it.copy(propped = on, props = n) else it }) }
-        set(give, maxOf(0, p.props) + if (give) 1 else -1)
-        viewModelScope.launch { runCatching { cloud.setProps(p.uid, p.id, give) }.onFailure { set(p.propped, p.props) } }
+    private fun patchPost(id: String, f: (Post) -> Post) = _ui.update { st -> st.copy(feed = st.feed.map { if (it.id == id) f(it) else it }) }
+
+    /** Vote on a post: tapping the same arrow again removes the vote. Counts update at once and roll back if Firestore refuses. */
+    fun vote(p: Post, dir: Int) {
+        val v = if (p.myVote == dir) 0 else dir
+        val up = p.up - (if (p.myVote == 1) 1 else 0) + (if (v == 1) 1 else 0)
+        val down = p.down - (if (p.myVote == -1) 1 else 0) + (if (v == -1) 1 else 0)
+        patchPost(p.id) { it.copy(myVote = v, up = up, down = down, score = up - down) }
+        viewModelScope.launch { runCatching { cloud.vote(p.id, v) }.onFailure { patchPost(p.id) { _ -> p }; err(it) } }
+    }
+
+    fun postAsk(topic: String, title: String, body: String, done: () -> Unit) {
+        viewModelScope.launch {
+            runCatching { cloud.postAsk(topic, title.trim(), body.trim(), store.profile()) }.onSuccess { done(); loadSocial() }.onFailure(::err)
+        }
+    }
+
+    fun deletePost(id: String, done: () -> Unit) {
+        viewModelScope.launch {
+            runCatching { cloud.deletePost(id) }.onSuccess { _ui.update { st -> st.copy(feed = st.feed.filterNot { it.id == id }) }; done() }.onFailure(::err)
+        }
+    }
+
+    fun openThread(id: String) {
+        _ui.update { it.copy(comments = emptyList(), commentsFor = id) }
+        viewModelScope.launch { runCatching { cloud.comments(id) }.onSuccess { c -> _ui.update { it.copy(comments = c) } }.onFailure(::err) }
+    }
+
+    fun addComment(postId: String, text: String, done: () -> Unit) {
+        viewModelScope.launch {
+            runCatching { cloud.addComment(postId, text.trim(), store.profile()) }.onSuccess { done(); openThread(postId); refreshCount(postId) }.onFailure(::err)
+        }
+    }
+
+    fun deleteComment(postId: String, id: String) {
+        viewModelScope.launch {
+            runCatching { cloud.deleteComment(postId, id) }.onSuccess { openThread(postId); refreshCount(postId) }.onFailure(::err)
+        }
+    }
+
+    private suspend fun refreshCount(postId: String) {
+        runCatching { cloud.comments(postId).size }.onSuccess { n -> patchPost(postId) { it.copy(comments = n) } }
+    }
+
+    fun loadTrends() {
+        _ui.update { it.copy(trendsBusy = true) }
+        viewModelScope.launch {
+            val today = LocalDate.now()
+            val d = withContext(Dispatchers.IO) { runCatching { source.days(today.minusDays(27), today, source.hasHealthAccess(), source.hasUsageAccess()) }.getOrDefault(emptyMap()) }
+            _ui.update { it.copy(trends = d, trendsBusy = false) }
+        }
     }
 
     /** Post a ledger milestone (streak or full day). */
     fun postEntry(e: Earned) {
-        val kind = if (e.kind == "FULL") "full" else "streak"
         viewModelScope.launch {
-            runCatching { cloud.postEntry("ent_${e.epochDay}_${e.kind}", kind, e.title, e.detail, e.points, store.profile()) }.onFailure(::err)
+            runCatching { cloud.postDone("ent_${e.epochDay}_${e.kind}", topicOfKind(e.kind), e.title, e.detail, e.points, System.currentTimeMillis(), store.profile()) }.onFailure(::err)
             loadSocial()
         }
     }
 
     fun postLevel(level: Int, aura: Int) {
         viewModelScope.launch {
-            runCatching { cloud.postEntry("lvl_$level", "level", "Reached level $level", Aura.levelName(level), aura, store.profile()) }.onFailure(::err)
+            runCatching { cloud.postDone("lvl_$level", "General", "Reached level $level", Aura.levelName(level), aura, System.currentTimeMillis(), store.profile()) }.onFailure(::err)
             loadSocial()
         }
     }
@@ -328,6 +400,62 @@ class AuraViewModel(app: Application) : AndroidViewModel(app) {
                 justEarned = _ui.value.justEarned + earned + gained,
             )
             loadInsight()
+            if (cloud.uid != null) syncSocial()
+        }
+    }
+
+    /** Aura from Circle: upvotes on your posts and gifts sent to you. Idempotent, keyed by post and gift. */
+    private suspend fun syncSocial() {
+        val mine = runCatching { cloud.myPosts() }.getOrNull()
+        val gifts = runCatching { cloud.gifts() }.getOrNull()
+        if (mine == null && gifts == null) return
+        val entries = ArrayList<Earned>()
+        mine?.forEach {
+            val day = it.ts / 86_400_000L
+            entries.add(Earned(day, "VOTES:${it.id}", it.score.coerceIn(0, EarnRules.VOTE_CAP), "Upvotes", it.title))
+        }
+        gifts?.forEach {
+            val day = it.ts / 86_400_000L
+            val title = if (it.reason == "helped") "Helped ${it.fromName}" else "Aura from ${it.fromName}"
+            entries.add(Earned(day, "GIFT:${it.id}", it.points, title, it.title))
+        }
+        val (es, gained) = earnLock.withLock {
+            val r = Earn.social(store.earnState(), entries, gifts?.map { "GIFT:${it.id}" }?.toSet())
+            store.saveEarn(r.state)
+            r.state to r.gained
+        }
+        if (es.total != _ui.value.aura) runCatching { cloud.pushProfile(store.profile(), es.total) }
+        _ui.update { it.copy(aura = es.total, ledger = Earn.newestFirst(es.ledger), myPosts = mine ?: it.myPosts, justEarned = it.justEarned + gained) }
+    }
+
+    /** Give 5 aura to the author of a post. Costs the giver the same. */
+    fun give(p: Post) {
+        val st = _ui.value
+        val today = LocalDate.now().toEpochDay()
+        if (p.uid == st.myUid || Earn.giveBlock(st.ledger, st.aura, p.id, today) != null) return
+        viewModelScope.launch {
+            runCatching {
+                cloud.sendGift(p.uid, "gave_${p.id}_${st.myUid}", EarnRules.GIVE_COST, "gave", p.id, p.title, store.profile().name)
+                earnLock.withLock {
+                    val s = store.earnState()
+                    store.saveEarn(s.copy(ledger = s.ledger + Earned(today, "GAVE:${p.id}", -EarnRules.GIVE_COST, "Gave aura", p.name)))
+                }
+            }.onFailure(::err)
+            refresh()
+        }
+    }
+
+    /** Mark one comment on your Ask as helpful (+10 to its author); marking the same one again clears it. */
+    fun markHelped(p: Post, c: Comment) {
+        viewModelScope.launch {
+            runCatching {
+                val old = _ui.value.comments.firstOrNull { it.id == p.helped }
+                if (old != null) runCatching { cloud.deleteGift(old.uid, "helped_${p.id}") }
+                val next = if (p.helped == c.id) "" else c.id
+                if (next.isNotEmpty()) cloud.sendGift(c.uid, "helped_${p.id}", EarnRules.HELPED_PTS, "helped", p.id, p.title, store.profile().name)
+                cloud.setHelped(p.id, next)
+                patchPost(p.id) { it.copy(helped = next) }
+            }.onFailure(::err)
         }
     }
 
