@@ -1,7 +1,10 @@
 package com.aura.app.ui
 
-import android.content.Context
-import android.content.Intent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -19,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.aura.app.AuraViewModel
 import com.aura.app.UiState
 import com.aura.app.data.Aura
 import com.aura.app.data.Earned
@@ -26,11 +30,14 @@ import com.aura.app.data.TodayItem
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
-/** Placeholder share: plain text. To be replaced by image cards. */
-fun shareEarned(ctx: Context, earned: Earned) {
-    val text = "${earned.title}: ${earned.detail} (${if (earned.points > 0) "+" else ""}${earned.points} aura)"
-    val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
-    ctx.startActivity(Intent.createChooser(send, "Share").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+/** The share card for a ledger entry. */
+internal fun Earned.toCard(): ShareCard {
+    val parts = kind.split("_")
+    return when {
+        kind.startsWith("STREAK_") && parts.size == 3 -> ShareCard.Streak(parts[1], parts[2].toIntOrNull() ?: 0)
+        kind.startsWith("GOAL:") -> ShareCard.GoalDone(title, detail, points)
+        else -> ShareCard.Entry(title, detail, points)
+    }
 }
 
 /** Today's four daily earnings with progress, directly under the halo. */
@@ -44,7 +51,7 @@ fun TodayStrip(items: List<TodayItem>, streaks: Map<String, Int>, onLedger: () -
             Text(it.title, style = T.head, modifier = Modifier.weight(1f))
             val s = streaks[it.kind] ?: 0
             if (s >= 2) { Caps("$s days"); GapW(10) }
-            Text("+${it.points}", style = T.label.copy(color = if (it.earned) C.accent else C.muted))
+            TodayPoints(it)
         }
         Gap(4)
         Text("${it.current} / ${it.target}", style = T.label)
@@ -53,6 +60,18 @@ fun TodayStrip(items: List<TodayItem>, streaks: Map<String, Int>, onLedger: () -
     }
     Gap(14)
     Btn("How you earned it", onLedger, kind = Kind.Quiet, small = true)
+}
+
+/** The "+10": one scale pulse the moment it becomes earned. */
+@Composable
+private fun TodayPoints(it: TodayItem) {
+    val pulse = remember { Animatable(1f) }
+    var was by remember { mutableStateOf(it.earned) }
+    LaunchedEffect(it.earned) {
+        if (it.earned && !was) { pulse.animateTo(1.4f, tween(140)); pulse.animateTo(1f, spring(dampingRatio = 0.45f, stiffness = 400f)) }
+        was = it.earned
+    }
+    Text("+${it.points}", style = T.label.copy(color = if (it.earned) C.accent else C.muted), modifier = Modifier.graphicsLayer { scaleX = pulse.value; scaleY = pulse.value })
 }
 
 private fun dayLabel(day: Long): String {
@@ -77,8 +96,9 @@ private val RULES = listOf(
 )
 
 @Composable
-fun LedgerScreen(ui: UiState, onBack: () -> Unit) {
-    val ctx = LocalContext.current
+fun LedgerScreen(ui: UiState, vm: AuraViewModel, onBack: () -> Unit) {
+    var card by remember { mutableStateOf<ShareCard?>(null) }
+    var sent by remember { mutableStateOf(setOf<String>()) }
     var open by remember { mutableStateOf(true) }
     val level = Aura.level(ui.aura)
     ScreenFrame("How you earned it", onBack) {
@@ -86,6 +106,12 @@ fun LedgerScreen(ui: UiState, onBack: () -> Unit) {
             Caps("Aura")
             Text("${ui.aura}", style = T.display)
             Text("Level $level, ${Aura.levelName(level)}", style = T.label)
+            Gap(10)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Btn("Share", { card = ShareCard.Level }, kind = Kind.Outline, small = true)
+                if (ui.signedIn && level > 1 && "lvl_$level" !in sent && ui.feed.none { it.uid == ui.myUid && it.id == "lvl_$level" })
+                    Btn("Post level to Circle", { sent = sent + "lvl_$level"; vm.postLevel(level, ui.aura) }, kind = Kind.Quiet, small = true)
+            }
             Gap(16)
             Panel(onClick = { open = !open }) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -105,16 +131,20 @@ fun LedgerScreen(ui: UiState, onBack: () -> Unit) {
                 Gap(4)
                 rows.forEachIndexed { i, e ->
                     if (i > 0) Rule()
-                    EarnedRow(e) { shareEarned(ctx, it) }
+                    val id = "ent_${e.epochDay}_${e.kind}"
+                    val canPost = ui.signedIn && (e.kind.startsWith("STREAK_") || e.kind == "FULL")
+                    EarnedRow(e, onShare = { card = e.toCard() }, onPost = if (canPost) ({ sent = sent + id; vm.postEntry(e) }) else null,
+                        posted = id in sent || ui.feed.any { it.uid == ui.myUid && it.id == id })
                 }
             }
             Gap(24)
         }
     }
+    card?.let { ShareSheet(it, ui.sharer()) { card = null } }
 }
 
 @Composable
-private fun EarnedRow(e: Earned, onShare: (Earned) -> Unit) {
+internal fun EarnedRow(e: Earned, onShare: () -> Unit, onPost: (() -> Unit)?, posted: Boolean) {
     Row(
         Modifier.fillMaxWidth().padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween,
@@ -126,6 +156,9 @@ private fun EarnedRow(e: Earned, onShare: (Earned) -> Unit) {
         GapW(12)
         Text("${if (e.points > 0) "+" else ""}${e.points}", style = T.num.copy(color = if (e.points > 0) C.accent else C.muted))
         GapW(8)
-        Btn("Share", { onShare(e) }, kind = Kind.Quiet, small = true)
+        if (onPost != null) {
+            if (posted) Caps("Posted", color = C.good) else Btn("Post", onPost, kind = Kind.Quiet, small = true)
+        }
+        Btn("Share", onShare, kind = Kind.Quiet, small = true)
     }
 }

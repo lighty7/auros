@@ -434,6 +434,7 @@ fun DetailScreen(vm: AuraViewModel, ui: UiState, id: Long, onBack: () -> Unit) {
     var confirmDelete by remember { mutableStateOf(false) }
     var posted by remember { mutableStateOf(store.isPosted(id)) }
     var posting by remember { mutableStateOf(false) }
+    var shareCard by remember { mutableStateOf<ShareCard?>(null) }
 
     suspend fun merge() {
         val r = rec ?: return
@@ -521,13 +522,11 @@ fun DetailScreen(vm: AuraViewModel, ui: UiState, id: Long, onBack: () -> Unit) {
             }
             Gap(16)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Btn("Share", {
-                    val msg = "${r.title} on Aura: ${km(r.distM)} km in ${clock(r.elapsedS)}" + if (m.hrAvg > 0) ", average ${m.hrAvg} bpm" else ""
-                    ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, msg), "Share"))
-                }, kind = Kind.Outline, small = true)
+                Btn("Share", { shareCard = ShareCard.Move(r.title, r.distM, r.elapsedS, pace(r.sport, r.distM, r.elapsedS), m.hrAvg) }, kind = Kind.Outline, small = true)
                 Btn("Delete", { confirmDelete = true }, kind = Kind.Quiet, small = true, tint = C.bad)
             }
         }
+        shareCard?.let { ShareSheet(it, ui.sharer()) { shareCard = null } }
         if (confirmDelete) AlertDialog(
             onDismissRequest = { confirmDelete = false }, containerColor = C.surface,
             title = { Text("Delete this activity?", style = T.head) },

@@ -12,6 +12,9 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.tasks.await
 
 /** An achievement a user chose to share: goal name, target and points only. Raw health data never leaves the phone. */
@@ -20,6 +23,9 @@ data class Post(
     val title: String, val metric: String, val target: Double, val days: Int, val points: Int, val ts: Long,
     /** "goal" or "activity" */
     val kind: String = "goal", val sport: String = "", val distM: Double = 0.0, val elapsedS: Int = 0, val hrAvg: Int = 0,
+    val detail: String = "",
+    /** props received; -1 when the count could not be read (hidden in the UI) */
+    val props: Int = -1, val propped: Boolean = false,
 )
 
 data class Person(val uid: String, val name: String, val occupation: String, val aura: Int)
@@ -131,6 +137,39 @@ class Cloud(private val ctx: Context) {
         db.collection("users").document(u).collection("following").document(other).delete().await()
     }
 
+    /** A milestone from the ledger or a new level. Only title, detail and points are shared. Idempotent per [id]. */
+    suspend fun postEntry(id: String, kind: String, title: String, detail: String, points: Int, p: Profile) {
+        val u = uid ?: return
+        db.collection("users").document(u).collection("posts").document(id).set(
+            mapOf("kind" to kind, "name" to p.name, "occupation" to p.occupation, "title" to title, "detail" to detail, "points" to points, "ts" to System.currentTimeMillis())
+        ).await()
+    }
+
+    /** Give or take back props on a post. */
+    suspend fun setProps(owner: String, postId: String, give: Boolean) {
+        val u = uid ?: return
+        val d = db.collection("users").document(owner).collection("posts").document(postId).collection("props").document(u)
+        if (give) d.set(mapOf("ts" to System.currentTimeMillis())).await() else d.delete().await()
+    }
+
+    /** Users with the same occupation, for suggestions. */
+    suspend fun similar(occupation: String): List<Person> {
+        if (occupation.isBlank()) return emptyList()
+        return db.collection("users").whereEqualTo("occupation", occupation).limit(20).get().await().documents
+            .map(::person).filter { it.uid != uid }.sortedByDescending { it.aura }.take(10)
+    }
+
+    /** People you follow plus you, by aura. */
+    suspend fun boardOf(ids: Set<String>): List<Person> =
+        (ids + listOfNotNull(uid)).take(30).mapNotNull { id ->
+            runCatching { db.collection("users").document(id).get().await().takeIf { it.exists() }?.let(::person) }.getOrNull()
+        }.sortedByDescending { it.aura }
+
+    /** 1-based rank by aura, or 0 when it cannot be worked out. */
+    suspend fun rankOf(aura: Int): Int = runCatching {
+        db.collection("users").whereGreaterThan("aura", aura).count().get(com.google.firebase.firestore.AggregateSource.SERVER).await().count.toInt() + 1
+    }.getOrDefault(0)
+
     /** Latest posts from the people you follow and yourself, newest first. */
     suspend fun feed(following: Set<String>): List<Post> {
         val ids = (following + listOfNotNull(uid)).take(30)
@@ -142,11 +181,24 @@ class Cloud(private val ctx: Context) {
                         d.getString("metric") ?: "", d.getDouble("target") ?: 0.0, (d.getLong("days") ?: 0).toInt(),
                         (d.getLong("points") ?: 0).toInt(), d.getLong("ts") ?: 0,
                         d.getString("kind") ?: "goal", d.getString("sport") ?: "", d.getDouble("distM") ?: 0.0,
-                        (d.getLong("elapsedS") ?: 0).toInt(), (d.getLong("hrAvg") ?: 0).toInt(),
+                        (d.getLong("elapsedS") ?: 0).toInt(), (d.getLong("hrAvg") ?: 0).toInt(), d.getString("detail") ?: "",
                     )
                 }
             }.getOrDefault(emptyList())
-        }.sortedByDescending { it.ts }.take(50)
+        }.sortedByDescending { it.ts }.take(30).let { withProps(it) }
+    }
+
+    /** Props counts for each post; if Firestore refuses, the counts stay at -1 and the UI hides them. */
+    private suspend fun withProps(posts: List<Post>): List<Post> = coroutineScope {
+        val me = uid
+        posts.map { p ->
+            async {
+                runCatching {
+                    val docs = db.collection("users").document(p.uid).collection("posts").document(p.id).collection("props").get().await().documents
+                    p.copy(props = docs.size, propped = docs.any { it.id == me })
+                }.getOrDefault(p)
+            }
+        }.awaitAll()
     }
 
     suspend fun board(): List<Person> =

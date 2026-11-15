@@ -10,6 +10,16 @@ An Android app that turns what your watch and phone already measure into goals y
 
 Android 13+ only. The UI follows the phone's light or dark mode.
 
+## Earning aura
+
+Four daily earnings, judged from your watch and phone: sleep between 7h and 9h, 8,000 steps (12,000 for more), 30 minutes of exercise, and 3 hours or less of screen time. Each is worth +10 (+15 for 12,000 steps), and all four on one day add +10. Streaks of 3, 7, 14 and 30 days on any one of them add +5, +15, +30 and +60. Two quiet days in a row start to cool your aura, never below the start of your level. Completed goals count too. Levels come from the total: level = floor(sqrt(aura / 50)) + 1.
+
+## Sharing
+
+Anything you earn can be shared as a 1080x1920 image card: a ledger entry, a streak, a completed goal, an activity or your level. The card shows the number, a title, one detail, your name, level and total. It never includes a route, map or location. From the share sheet you can send it to WhatsApp, Instagram or Snapchat (only installed apps are listed), open the system chooser, or save it to Pictures/Aura. Snapchat receives the image only, so it opens its send-to screen rather than a chat message.
+
+In Circle you can post streak milestones, full days and new levels to your feed, and give props to other people's posts. Props live at `users/{uid}/posts/{postId}/props/{giverUid}`, so publish the updated `firestore.rules`.
+
 ## Building
 
 Needs JDK 17 and the Android SDK (compile SDK 37).

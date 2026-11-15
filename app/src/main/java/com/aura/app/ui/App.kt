@@ -124,7 +124,7 @@ fun App(vm: AuraViewModel) {
             ) { s ->
                 when (s) {
                     MoveScreen.Plan -> PlanScreen(onBack = { screen = null }, onStart = { screen = MoveScreen.Record })
-                    MoveScreen.Ledger -> LedgerScreen(ui, onBack = { screen = null })
+                    MoveScreen.Ledger -> LedgerScreen(ui, vm, onBack = { screen = null })
                     MoveScreen.Record -> RecordScreen(onBack = { screen = null }, onSaved = { screen = MoveScreen.Detail(it); vm.refresh() })
                     is MoveScreen.Detail -> DetailScreen(vm, ui, s.id, onBack = { screen = null; vm.refresh() })
                     null -> Shell(vm, ui, tab, onTab = { tab = it }, onAdd = { adding = it }, onScreen = { screen = it })
@@ -135,6 +135,9 @@ fun App(vm: AuraViewModel) {
             }
             ui.update?.let { UpdateSheet(it, ui.updateProgress, ui.updateMsg, vm::startUpdate, vm::snoozeUpdate) }
             Celebration(ui.justEarned, vm::celebrated, Modifier.align(Alignment.TopCenter))
+            var lv by remember { mutableIntStateOf(0) }
+            if (ui.levelUp > 0) lv = ui.levelUp
+            AnimatedVisibility(ui.levelUp > 0 && screen == null, enter = fadeIn(tween(250)), exit = fadeOut(tween(300))) { LevelUp(lv, vm::levelSeen) }
         }
     }
 }
@@ -221,22 +224,29 @@ private fun SideRail(tab: Tab, onTab: (Tab) -> Unit) {
 private fun Celebration(earned: Int, onDone: () -> Unit, modifier: Modifier) {
     var shown by remember { mutableIntStateOf(0) }
     if (earned > 0) shown = earned
-    LaunchedEffect(earned) { if (earned > 0) { delay(6000); onDone() } }
+    val sweep = remember { Animatable(0f) }
+    LaunchedEffect(earned) {
+        if (earned > 0) {
+            sweep.snapTo(0f)
+            sweep.animateTo(1f, tween(6000, easing = LinearEasing))
+            onDone()
+        }
+    }
     AnimatedVisibility(
         visible = earned > 0, modifier = modifier.statusBarsPadding().padding(16.dp).widthIn(max = 560.dp),
         enter = slideInVertically(spring(dampingRatio = 0.7f, stiffness = 300f)) { -it } + fadeIn(),
         exit = slideOutVertically(tween(220)) { -it } + fadeOut(),
     ) {
-        Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(C.accent).clickable(onClick = onDone).padding(horizontal = 18.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(C.accent).clickable(onClick = onDone)) {
+        Row(Modifier.padding(horizontal = 18.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("+${countUp(shown)}", style = T.title.copy(color = C.onAccent))
             GapW(14)
             Column(Modifier.weight(1f)) {
                 Text("Aura earned", style = T.head.copy(color = C.onAccent))
                 Text("Added to your total. See how under You.", style = T.label.copy(color = C.onAccent.copy(alpha = 0.75f)))
             }
+        }
+        Box(Modifier.fillMaxWidth(1f - sweep.value).height(3.dp).background(C.onAccent.copy(alpha = 0.55f)))
         }
     }
 }
@@ -516,154 +526,6 @@ private fun AddGoalSheet(start: Triple<String, Metric, Double>, onDismiss: () ->
 }
 
 // ---------- circle: feed, leaderboard, friends ----------
-
-private enum class Pane(val label: String) { FEED("Feed"), BOARD("Board"), FIND("Find"), MINE("Mine") }
-
-@Composable
-private fun Circle(vm: AuraViewModel, ui: UiState) {
-    var pane by rememberSaveable { mutableStateOf(Pane.FEED) }
-    Text("Circle", style = T.title)
-    Gap(6)
-    Text("What you and the people you follow have earned.", style = T.label)
-    Gap(20)
-    if (!ui.signedIn) {
-        SignIn(vm, ui)
-        Gap(28)
-        Mine(ui.goals.filter { it.status == Status.COMPLETED }, ui.profile)
-        return
-    }
-    Seg(Pane.entries.map { it to it.label }, pane) { pane = it; if (it != Pane.FIND) vm.loadSocial() }
-    Gap(18)
-    if (ui.cloudError.isNotBlank()) { Text(ui.cloudError, style = T.label.copy(color = C.bad)); Gap(10) }
-    when (pane) {
-        Pane.FEED -> Feed(ui)
-        Pane.BOARD -> Board(vm, ui)
-        Pane.FIND -> Find(vm, ui)
-        Pane.MINE -> Mine(ui.goals.filter { it.status == Status.COMPLETED }, ui.profile)
-    }
-}
-
-@Composable
-private fun SignIn(vm: AuraViewModel, ui: UiState) {
-    val ctx = LocalContext.current
-    Panel {
-        Text("Join the circle", style = T.head)
-        Gap(4)
-        Text("Sign in to follow friends, post what you complete and climb the board. Only goal names, points and the activity totals you choose to post are shared. Your health data stays on this phone.", style = T.label)
-        Gap(14)
-        Btn(if (ui.cloudBusy) "Signing in…" else "Sign in with Google", { (ctx as? android.app.Activity)?.let(vm::signIn) }, enabled = !ui.cloudBusy, small = true)
-        if (ui.cloudError.isNotBlank()) { Gap(8); Text(ui.cloudError, style = T.label.copy(color = C.bad)) }
-    }
-}
-
-private fun ago(ts: Long): String {
-    val m = (System.currentTimeMillis() - ts) / 60_000
-    return when {
-        m < 1 -> "just now"
-        m < 60 -> "${m}m ago"
-        m < 60 * 24 -> "${m / 60}h ago"
-        else -> "${m / (60 * 24)}d ago"
-    }
-}
-
-private fun describe(metric: String, days: Int, target: Double): String {
-    val m = runCatching { Metric.valueOf(metric) }.getOrNull() ?: return "$days days"
-    return "$days days of ${m.label.lowercase()} ${if (m.lowerIsBetter) "under" else "over"} ${m.fmt(target)} ${m.unit}"
-}
-
-@Composable
-private fun Feed(ui: UiState) {
-    if (ui.feed.isEmpty()) Text("Nothing here yet. Follow someone under Find, or complete a goal of your own.", style = T.body)
-    ui.feed.forEachIndexed { i, p ->
-        Reveal(i) {
-            if (i > 0) Rule()
-            Row(Modifier.fillMaxWidth().padding(vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Caps("${if (p.uid == ui.myUid) "You" else p.name} · ${p.occupation} · ${ago(p.ts)}")
-                    Gap(6)
-                    if (p.kind == "activity") {
-                        Text("${p.title}, ${km(p.distM)} km", style = T.head)
-                        Gap(2)
-                        Text("${clock(p.elapsedS)} · ${pace(p.sport, p.distM, p.elapsedS)}" + if (p.hrAvg > 0) " · ${p.hrAvg} bpm average" else "", style = T.label)
-                    } else {
-                        Text(p.title, style = T.head)
-                        Gap(2)
-                        Text(describe(p.metric, p.days, p.target), style = T.label)
-                    }
-                }
-                if (p.kind != "activity") {
-                    GapW(12)
-                    Column(horizontalAlignment = Alignment.End) { Text("+${p.points}", style = T.num.copy(color = C.accent)); Caps("aura") }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PersonRow(rank: Int?, p: Person, ui: UiState, vm: AuraViewModel) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (rank != null) Text("$rank", style = T.num.copy(color = if (rank <= 3) C.accent else C.muted), modifier = Modifier.width(40.dp))
-        Column(Modifier.weight(1f)) {
-            Text(if (p.uid == ui.myUid) "${p.name} (you)" else p.name, style = T.head, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Gap(2)
-            Caps("${p.occupation} · ${p.aura} aura")
-        }
-        if (p.uid != ui.myUid) {
-            val on = p.uid in ui.following
-            GapW(10)
-            Btn(if (on) "Following" else "Follow", { vm.toggleFollow(p.uid) }, kind = if (on) Kind.Outline else Kind.Primary, small = true)
-        }
-    }
-}
-
-@Composable
-private fun Board(vm: AuraViewModel, ui: UiState) {
-    if (ui.board.isEmpty()) Text("No one is on the board yet.", style = T.body)
-    ui.board.forEachIndexed { i, p -> Reveal(i) { if (i > 0) Rule(); PersonRow(i + 1, p, ui, vm) } }
-}
-
-@Composable
-private fun Find(vm: AuraViewModel, ui: UiState) {
-    var q by remember { mutableStateOf("") }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Field(q, { q = it }, "Search by name", Modifier.weight(1f), onSearch = { vm.search(q) })
-        GapW(10)
-        Btn("Search", { vm.search(q) }, small = true)
-    }
-    Gap(14)
-    if (ui.results.isEmpty()) Text("Search for a friend by the name they signed up with.", style = T.label)
-    ui.results.forEachIndexed { i, p -> if (i > 0) Rule(); PersonRow(null, p, ui, vm) }
-}
-
-@Composable
-private fun Mine(done: List<GoalProgress>, profile: Profile) {
-    val ctx = LocalContext.current
-    Caps("Completed by you")
-    Gap(10)
-    if (done.isEmpty()) Text("Complete a goal and it shows up here, ready to share.", style = T.body)
-    done.sortedByDescending { it.goal.completedEpochDay }.forEach { p ->
-        val g = p.goal
-        Panel {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(g.title, style = T.head)
-                    Gap(2)
-                    Text(describe(g.metric.name, g.days, g.target), style = T.label)
-                }
-                GapW(12)
-                Column(horizontalAlignment = Alignment.End) { Text("+${g.awarded}", style = T.num.copy(color = C.accent)); Caps("aura") }
-            }
-            Gap(14)
-            Btn("Share", {
-                val msg = "+${g.awarded} aura on Aura. I completed \"${g.title}\": ${describe(g.metric.name, g.days, g.target)}, verified by my watch. ${profile.name}, ${profile.occupation}."
-                ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, msg), "Share aura"))
-            }, kind = Kind.Outline, small = true)
-        }
-        Gap(10)
-    }
-}
-
 // ---------- you ----------
 
 @Composable
@@ -678,6 +540,7 @@ private fun StatusRow(label: String, ok: Boolean, state: String) {
 
 @Composable
 private fun You(vm: AuraViewModel, ui: UiState, onLedger: () -> Unit) {
+    var shareAura by remember { mutableStateOf(false) }
     Caps(ui.profile.occupation)
     Gap(6)
     Text(ui.profile.name, style = T.title)
@@ -688,7 +551,11 @@ private fun You(vm: AuraViewModel, ui: UiState, onLedger: () -> Unit) {
         Stat("In progress", "${ui.goals.count { it.status == Status.ACTIVE }}"),
     ))
     Gap(12)
-    Btn("How you earned it", onLedger, kind = Kind.Outline, small = true)
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Btn("How you earned it", onLedger, kind = Kind.Outline, small = true)
+        Btn("Share your aura", { shareAura = true }, kind = Kind.Outline, small = true)
+    }
+    if (shareAura) ShareSheet(ShareCard.Level, ui.sharer()) { shareAura = false }
     Connections(vm, ui)
     Gap(28)
     Caps("Connections")

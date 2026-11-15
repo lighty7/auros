@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import android.app.Activity
 import com.aura.app.data.ActivityStore
+import com.aura.app.data.Aura
 import com.aura.app.data.Cloud
 import com.aura.app.data.Earn
 import com.aura.app.data.EarnRules
@@ -55,6 +56,12 @@ data class UiState(
     val board: List<Person> = emptyList(),
     val results: List<Person> = emptyList(),
     val following: Set<String> = emptySet(),
+    val boardFollowing: List<Person> = emptyList(),
+    val similar: List<Person> = emptyList(),
+    /** 0 = unknown */
+    val myRank: Int = 0,
+    /** a level just reached, shown once as a moment; 0 = none */
+    val levelUp: Int = 0,
     val cloudBusy: Boolean = false,
     val cloudError: String = "",
     /** heart rate merged with app use for one day; null until first read */
@@ -103,7 +110,7 @@ class AuraViewModel(app: Application) : AndroidViewModel(app) {
 
     fun signOut() {
         cloud.signOut()
-        _ui.value = _ui.value.copy(signedIn = false, email = "", myUid = "", feed = emptyList(), board = emptyList(), results = emptyList(), following = emptySet())
+        _ui.value = _ui.value.copy(signedIn = false, email = "", myUid = "", feed = emptyList(), board = emptyList(), results = emptyList(), following = emptySet(), boardFollowing = emptyList(), similar = emptyList(), myRank = 0)
     }
 
     /** Push profile, aura and completed goals (as shareable posts) to the account. */
@@ -129,10 +136,43 @@ class AuraViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val f = cloud.following()
-                _ui.value = _ui.value.copy(following = f, feed = cloud.feed(f), board = cloud.board())
+                val board = cloud.board()
+                _ui.value = _ui.value.copy(following = f, feed = cloud.feed(f), board = board)
+                val me = cloud.uid
+                val aura = _ui.value.aura
+                val rank = board.indexOfFirst { it.uid == me }.let { if (it >= 0) it + 1 else cloud.rankOf(aura) }
+                val mine = _ui.value.profile.occupation
+                val rest = runCatching { Triple(cloud.boardOf(f), cloud.similar(mine), rank) }.getOrNull()
+                if (rest != null) _ui.value = _ui.value.copy(boardFollowing = rest.first, similar = rest.second, myRank = rest.third)
             } catch (e: Throwable) { err(e) }
         }
     }
+
+    /** Give or remove props; the count updates at once and rolls back if Firestore refuses. */
+    fun toggleProps(p: Post) {
+        val give = !p.propped
+        fun set(on: Boolean, n: Int) = _ui.update { s -> s.copy(feed = s.feed.map { if (it.uid == p.uid && it.id == p.id) it.copy(propped = on, props = n) else it }) }
+        set(give, maxOf(0, p.props) + if (give) 1 else -1)
+        viewModelScope.launch { runCatching { cloud.setProps(p.uid, p.id, give) }.onFailure { set(p.propped, p.props) } }
+    }
+
+    /** Post a ledger milestone (streak or full day). */
+    fun postEntry(e: Earned) {
+        val kind = if (e.kind == "FULL") "full" else "streak"
+        viewModelScope.launch {
+            runCatching { cloud.postEntry("ent_${e.epochDay}_${e.kind}", kind, e.title, e.detail, e.points, store.profile()) }.onFailure(::err)
+            loadSocial()
+        }
+    }
+
+    fun postLevel(level: Int, aura: Int) {
+        viewModelScope.launch {
+            runCatching { cloud.postEntry("lvl_$level", "level", "Reached level $level", Aura.levelName(level), aura, store.profile()) }.onFailure(::err)
+            loadSocial()
+        }
+    }
+
+    fun levelSeen() { _ui.update { it.copy(levelUp = 0) } }
 
     fun search(q: String) {
         viewModelScope.launch { runCatching { cloud.search(q) }.onSuccess { _ui.value = _ui.value.copy(results = it, cloudError = "") }.onFailure(::err) }
@@ -272,7 +312,12 @@ class AuraViewModel(app: Application) : AndroidViewModel(app) {
                 Triple(r.state, r.gained, ed[today])
             }
             if (es.total != _ui.value.aura && cloud.uid != null) viewModelScope.launch { runCatching { cloud.pushProfile(store.profile(), es.total) } }
+            val prefs = getApplication<Application>().getSharedPreferences("aura_moments", android.content.Context.MODE_PRIVATE)
+            val lvlNow = Aura.level(es.total)
+            val lvlSeen = prefs.getInt("level", 0)
+            if (lvlSeen != lvlNow) prefs.edit().putInt("level", lvlNow).apply()
             _ui.value = _ui.value.copy(
+                levelUp = if (lvlSeen in 1 until lvlNow) lvlNow else _ui.value.levelUp,
                 goals = progress,
                 aura = es.total,
                 ledger = Earn.newestFirst(es.ledger),
