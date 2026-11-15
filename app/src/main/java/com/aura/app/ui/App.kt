@@ -306,7 +306,7 @@ private fun Today(vm: AuraViewModel, ui: UiState, onAdd: (Triple<String, Metric,
         Text("$hello, ${ui.profile.name}", style = T.title, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
     Gap(12)
-    Reveal(1) { AuraHalo(ui.aura) }
+    Reveal(1) { AuraHalo(ui.aura, if (ui.healthOk) ui.today else emptyList(), ui.streaks, onLedger) }
     if (ui.healthOk && ui.today.isNotEmpty()) {
         Gap(20)
         Reveal(1) { TodayStrip(ui.today, ui.streaks, onLedger, onTrends) }
@@ -348,46 +348,6 @@ private fun Today(vm: AuraViewModel, ui: UiState, onAdd: (Triple<String, Metric,
             Gap(14)
             active.forEach { GoalCard(it); Gap(10) }
         }
-    }
-}
-
-/** The aura total inside a gauge of progress to the next level, with a slow ring of light turning around it. */
-@Composable
-private fun AuraHalo(points: Int) {
-    val lvl = Aura.level(points)
-    val from = Aura.levelStart(lvl); val to = Aura.levelStart(lvl + 1)
-    val frac = ((points - from).toFloat() / (to - from)).coerceIn(0f, 1f)
-    val sweep = remember { Animatable(0f) }
-    LaunchedEffect(frac) { sweep.animateTo(frac, tween(1300, easing = FastOutSlowInEasing)) }
-    val spin = rememberInfiniteTransition(label = "halo").animateFloat(0f, 360f, infiniteRepeatable(tween(26_000, easing = LinearEasing)), label = "spin")
-    val shown = countUp(points)
-    val accent = C.accent; val line = C.line; val butter = C.butter
-
-    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.size(272.dp), contentAlignment = Alignment.Center) {
-            Canvas(Modifier.fillMaxSize()) {
-                val sw = 9.dp.toPx()
-                val d = size.minDimension - 56.dp.toPx()
-                val tl = Offset((size.width - d) / 2, (size.height - d) / 2)
-                drawArc(line, 135f, 270f, false, tl, Size(d, d), style = Stroke(sw, cap = StrokeCap.Round))
-                if (sweep.value > 0.004f) drawArc(accent, 135f, 270f * sweep.value, false, tl, Size(d, d), style = Stroke(sw, cap = StrokeCap.Round))
-                // the halo: short ticks whose brightness trails off around the circle, turning slowly
-                val r0 = d / 2 + 13.dp.toPx(); val r1 = r0 + 7.dp.toPx(); val n = 96
-                for (i in 0 until n) {
-                    val a = Math.toRadians(i * 360.0 / n + spin.value)
-                    val k = i.toFloat() / n
-                    val cx = cos(a).toFloat(); val cy = sin(a).toFloat()
-                    drawLine(butter.copy(alpha = 0.06f + 0.9f * k * k), Offset(center.x + cx * r0, center.y + cy * r0), Offset(center.x + cx * r1, center.y + cy * r1), 1.5.dp.toPx(), StrokeCap.Round)
-                }
-            }
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Caps("Aura")
-                val size = when { shown < 1000 -> 76; shown < 10_000 -> 60; else -> 48 }
-                Text("$shown", style = T.display.copy(fontSize = size.sp, lineHeight = size.sp))
-                Caps("Level $lvl · ${Aura.levelName(lvl)}", color = C.ink)
-            }
-        }
-        Text("${to - points} to level ${lvl + 1}", style = T.label)
     }
 }
 
