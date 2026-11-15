@@ -91,24 +91,56 @@ class HealthSource(private val ctx: Context) {
             AggregateGroupByPeriodRequest(
                 metrics = setOf(
                     StepsRecord.COUNT_TOTAL, ExerciseSessionRecord.EXERCISE_DURATION_TOTAL,
-                    SleepSessionRecord.SLEEP_DURATION_TOTAL, ActiveCaloriesBurnedRecord.ACTIVE_CALORIES_TOTAL,
+                    ActiveCaloriesBurnedRecord.ACTIVE_CALORIES_TOTAL,
                     DistanceRecord.DISTANCE_TOTAL,
                 ),
                 timeRangeFilter = TimeRangeFilter.between(from.atStartOfDay(), to.plusDays(1).atStartOfDay()),
                 timeRangeSlicer = Period.ofDays(1),
             )
         )
+        val sleepByDay = sleepPerDay(from, to)
         rows.associate { r ->
             val res = r.result
             r.startTime.toLocalDate() to Day(
                 steps = res[StepsRecord.COUNT_TOTAL]?.toDouble(),
                 exerciseMin = res[ExerciseSessionRecord.EXERCISE_DURATION_TOTAL]?.toMinutes()?.toDouble(),
-                sleepH = res[SleepSessionRecord.SLEEP_DURATION_TOTAL]?.toMinutes()?.div(60.0),
+                sleepH = sleepByDay[r.startTime.toLocalDate()],
                 kcal = res[ActiveCaloriesBurnedRecord.ACTIVE_CALORIES_TOTAL]?.inKilocalories,
                 screenH = null,
                 distKm = res[DistanceRecord.DISTANCE_TOTAL]?.inMeters?.div(1000.0),
             )
         }
+    }.getOrDefault(emptyMap())
+
+    /** Time asleep of a session: its length minus awake stages, or the whole session when it has no stages. */
+    private fun asleepMs(r: SleepSessionRecord): Long {
+        val total = Duration.between(r.startTime, r.endTime).toMillis()
+        if (r.stages.isEmpty()) return total
+        val awake = r.stages.filter {
+            it.stage == SleepSessionRecord.STAGE_TYPE_AWAKE || it.stage == SleepSessionRecord.STAGE_TYPE_AWAKE_IN_BED || it.stage == SleepSessionRecord.STAGE_TYPE_OUT_OF_BED
+        }.sumOf { Duration.between(it.startTime, it.endTime).toMillis() }
+        val asleep = r.stages.filter {
+            it.stage != SleepSessionRecord.STAGE_TYPE_AWAKE && it.stage != SleepSessionRecord.STAGE_TYPE_AWAKE_IN_BED && it.stage != SleepSessionRecord.STAGE_TYPE_OUT_OF_BED &&
+                it.stage != SleepSessionRecord.STAGE_TYPE_UNKNOWN
+        }.sumOf { Duration.between(it.startTime, it.endTime).toMillis() }
+        return if (asleep > 0) asleep else (total - awake).coerceAtLeast(0)
+    }
+
+    /** Sleep per local day: sessions count whole on the day they end, so a night is never split at midnight. */
+    private suspend fun sleepPerDay(from: LocalDate, to: LocalDate): Map<LocalDate, Double> = runCatching {
+        val zone = ZoneId.systemDefault()
+        val range = TimeRangeFilter.between(from.atStartOfDay(zone).toInstant().minusSeconds(18 * 3600L), to.plusDays(1).atStartOfDay(zone).toInstant())
+        val out = HashMap<LocalDate, Double>()
+        var token: String? = null
+        do {
+            val page = client.readRecords(ReadRecordsRequest(SleepSessionRecord::class, range, pageSize = 500, pageToken = token))
+            page.records.forEach { r ->
+                val d = r.endTime.atZone(zone).toLocalDate()
+                if (!d.isBefore(from) && !d.isAfter(to)) out[d] = (out[d] ?: 0.0) + asleepMs(r) / 3_600_000.0
+            }
+            token = page.pageToken?.takeIf { it.isNotEmpty() }
+        } while (token != null)
+        out
     }.getOrDefault(emptyMap())
 
     /**
@@ -283,6 +315,9 @@ class HealthSource(private val ctx: Context) {
         val start = d.atStartOfDay(zone).toInstant().toEpochMilli()
         val end = minOf(d.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli(), System.currentTimeMillis())
         if (end <= start) return null
+        val ev = sessions(start, end).sumOf { it.ms }
+        if (ev > 0) return ev / 3_600_000.0
+        if (d.isAfter(LocalDate.now().minusDays(6))) return 0.0
         val usm = ctx.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val ms = usm.queryAndAggregateUsageStats(start, end).filterKeys { it != ctx.packageName }.values.sumOf { it.totalTimeInForeground }
         ms / 3_600_000.0

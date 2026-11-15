@@ -581,7 +581,7 @@ private fun You(vm: AuraViewModel, ui: UiState, onLedger: () -> Unit) {
     Gap(18)
     Text("Version ${com.aura.app.BuildConfig.VERSION_NAME}", style = T.label)
     Gap(6)
-    Btn("Check for updates", { vm.checkForUpdates(true) }, kind = Kind.Quiet, small = true)
+    Btn("Check for updates", { vm.checkForUpdates(true) }, kind = Kind.Quiet, small = true, flush = true)
     if (ui.updateMsg.isNotBlank() && ui.update == null) { Gap(4); Text(ui.updateMsg, style = T.label) }
     Gap(20)
 }

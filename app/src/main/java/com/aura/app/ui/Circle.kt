@@ -246,14 +246,14 @@ private fun Board(vm: AuraViewModel, ui: UiState) {
 /** First, second and third: bars that grow to height with a spring, the first one in the accent. */
 @Composable
 private fun Podium(top: List<Person>, me: String, key: Any) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.Bottom) {
         listOf(1, 0, 2).filter { it < top.size }.forEach { idx ->
             val p = top[idx]
             val grow = remember(key) { Animatable(0f) }
             LaunchedEffect(key) { delay(120L + idx * 110L); grow.animateTo(1f, spring(dampingRatio = 0.62f, stiffness = 130f)) }
-            val full = when (idx) { 0 -> 132; 1 -> 96; else -> 68 }
+            val full = when (idx) { 0 -> 140; 1 -> 104; else -> 80 }
             val first = idx == 0
-            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(Modifier.fillMaxWidth(0.28f), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(if (p.uid == me) "You" else p.name.substringBefore(' '), style = T.head, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text("${countUp(p.aura)}", style = T.num.copy(color = if (first) C.accent else C.ink))
                 Gap(8)

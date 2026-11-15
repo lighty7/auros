@@ -56,7 +56,7 @@ object Updater {
                 val tag = j.optString("tag_name").removePrefix("v")
                 if (tag.isBlank() || !isNewer(tag)) return@withContext CheckResult.UpToDate
                 val notes = j.optString("body").lines().map { it.trim() }
-                    .filter { it.startsWith("- ") || it.startsWith("* ") }.map { it.drop(2).trim() }.take(8)
+                    .filter { it.startsWith("- ") || it.startsWith("* ") }.map { it.drop(1).trim().trimStart('-', '*', ' ') }.filter { it.isNotBlank() }.take(8)
                 val assets = j.optJSONArray("assets")
                 var asset: JSONObject? = null
                 if (assets != null) for (i in 0 until assets.length()) {
@@ -103,7 +103,7 @@ object Updater {
                     DownloadManager.STATUS_SUCCESSFUL -> done = true
                     DownloadManager.STATUS_FAILED -> error("Download failed")
                     else -> {
-                        val got = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+                        val got = maxOf(c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)), if (file.exists()) file.length() else 0L)
                         val total = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)).takeIf { it > 0 } ?: u.size
                         if (total > 0) onProgress((got.toFloat() / total).coerceIn(0f, 1f))
                     }

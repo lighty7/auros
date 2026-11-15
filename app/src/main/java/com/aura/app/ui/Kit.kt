@@ -131,7 +131,7 @@ enum class Kind { Primary, Accent, Outline, Quiet }
 @Composable
 fun Btn(
     text: String, onClick: () -> Unit, modifier: Modifier = Modifier, kind: Kind = Kind.Primary,
-    enabled: Boolean = true, small: Boolean = false, tint: Color? = null,
+    enabled: Boolean = true, small: Boolean = false, tint: Color? = null, flush: Boolean = false,
 ) {
     val src = remember { MutableInteractionSource() }
     val shape = RoundedCornerShape(if (small) 11.dp else 14.dp)
@@ -142,7 +142,7 @@ fun Btn(
             .then(if (kind == Kind.Outline) Modifier.border(1.dp, C.ink.copy(alpha = 0.3f), shape) else Modifier)
             .clickable(interactionSource = src, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
             .defaultMinSize(minHeight = if (small) 44.dp else 54.dp)
-            .padding(horizontal = if (small) 16.dp else 22.dp),
+            .padding(horizontal = if (flush) 0.dp else if (small) 16.dp else 22.dp),
         contentAlignment = Alignment.Center,
     ) { Text(text, style = T.head.copy(color = fg, fontSize = if (small) 14.sp else 16.sp), maxLines = 1) }
 }

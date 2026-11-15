@@ -118,11 +118,11 @@ fun renderCard(ctx: Context, card: ShareCard, who: Sharer): Bitmap {
 
     // wordmark
     val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ACCENT }
-    cv.drawCircle(96f, 118f, 14f, dot)
-    cv.drawText("aura", 128f, 138f, tp(BONE, 60f, medium, -0.02f))
+    cv.drawCircle(96f, 318f, 14f, dot)
+    cv.drawText("aura", 128f, 338f, tp(BONE, 60f, medium, -0.02f))
 
     // halo: a ring of ticks, a track and an accent arc that fills with progress to the next level
-    val cx = W / 2f; val cy = 800f; val r = 360f
+    val cx = W / 2f; val cy = 760f; val r = 310f
     val tick = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 4f; strokeCap = Paint.Cap.ROUND }
     for (i in 0 until 96) {
         val a = Math.toRadians(i * 360.0 / 96 - 90)
@@ -142,7 +142,7 @@ fun renderCard(ctx: Context, card: ShareCard, who: Sharer): Bitmap {
 
     // headline, fitted inside the ring
     val big = tp(BONE, 300f, medium, -0.04f)
-    val maxW = 600f
+    val maxW = 520f
     while (big.measureText(p.big) > maxW && big.textSize > 70f) big.textSize -= 6f
     val bw = big.measureText(p.big)
     cv.drawText(p.big, cx - bw / 2, cy + big.textSize * 0.34f, big)
@@ -155,20 +155,20 @@ fun renderCard(ctx: Context, card: ShareCard, who: Sharer): Bitmap {
         cv.save(); cv.translate(W / 2f - 460f, top); l.draw(cv); cv.restore()
         return top + l.height
     }
-    val y1 = block(p.title, tp(BONE, 84f, semi, -0.02f), 1290f, 2)
-    block(p.detail, tp(MUTED, 46f, tf), y1 + 28f, 2)
+    val y1 = block(p.title, tp(BONE, 76f, semi, -0.02f), 1150f, 2)
+    block(p.detail, tp(MUTED, 42f, tf), y1 + 22f, 2)
 
     // footer: who, level, total
     val rule = Paint().apply { color = LINE; strokeWidth = 3f }
-    cv.drawLine(96f, 1650f, W - 96f, 1650f, rule)
+    cv.drawLine(96f, 1450f, W - 96f, 1450f, rule)
     val name = TextUtils.ellipsize(who.name.ifBlank { "Aura" }, tp(BONE, 64f, semi), 888f, TextUtils.TruncateAt.END).toString()
-    cv.drawText(name, 96f, 1735f, tp(BONE, 64f, semi, -0.01f))
-    cv.drawText("Level $lvl  ·  ${Aura.levelName(lvl)}", 96f, 1800f, tp(MUTED, 42f, tf))
+    cv.drawText(name, 96f, 1510f, tp(BONE, 64f, semi, -0.01f))
+    cv.drawText("Level $lvl  ·  ${Aura.levelName(lvl)}", 96f, 1545f, tp(MUTED, 42f, tf))
     val tot = tp(ACCENT, 84f, medium, -0.02f)
     val ts = "${who.aura}"
-    cv.drawText(ts, W - 96f - tot.measureText(ts), 1735f, tot)
+    cv.drawText(ts, W - 96f - tot.measureText(ts), 1510f, tot)
     val al = tp(MUTED, 32f, semi, 0.12f)
-    cv.drawText("AURA", W - 96f - al.measureText("AURA"), 1800f, al)
+    cv.drawText("AURA", W - 96f - al.measureText("AURA"), 1545f, al)
     return bmp
 }
 

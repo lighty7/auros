@@ -54,12 +54,13 @@ fun TodayStrip(items: List<TodayItem>, streaks: Map<String, Int>, onLedger: () -
             TodayPoints(it)
         }
         Gap(4)
-        Text("${it.current} / ${it.target}", style = T.label)
+        val over = it.kind == "FOCUS" && it.progress >= 1f
+        if (over) Text("${it.current}, over 3h", style = T.label.copy(color = C.bad)) else Text("${it.current} / ${it.target}", style = T.label)
         Gap(6)
-        Meter(it.progress, color = if (it.earned) C.accent else C.muted, height = 4)
+        Meter(it.progress, color = if (over) C.bad else if (it.earned) C.accent else C.muted, height = 4)
     }
     Gap(14)
-    Btn("How you earned it", onLedger, kind = Kind.Quiet, small = true)
+    Btn("How you earned it", onLedger, kind = Kind.Quiet, small = true, flush = true)
 }
 
 /** The "+10": one scale pulse the moment it becomes earned. */
