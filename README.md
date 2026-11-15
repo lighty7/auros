@@ -9,7 +9,7 @@ An Android app that turns what your watch and phone already measure into goals y
 - **Circle.** A very light forum: Done posts (from your ledger, goals and activities) and Ask posts (advice, 80 character title, 500 character body), each with one topic, votes and comments. Feed, Trending, Board and Mine. Raw health data never leaves the phone.
 - **Trends.** Week bars, a four-week consistency grid, aura over time and this week against last, opened from Today.
 
-Android 13+ only. The UI follows the phone's light or dark mode.
+Android 12+ only. The UI follows the phone's light or dark mode.
 
 ## Earning aura
 

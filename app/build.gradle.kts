@@ -23,7 +23,7 @@ android {
     compileSdk = 37
     defaultConfig {
         applicationId = "com.aura.app"
-        minSdk = 33
+        minSdk = 31
         targetSdk = 37
         versionCode = appVersionCode
         versionName = appVersionName

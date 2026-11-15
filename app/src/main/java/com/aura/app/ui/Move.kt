@@ -348,7 +348,11 @@ fun RecordScreen(onBack: () -> Unit, onSaved: (Long) -> Unit) {
     var pendingSim by remember { mutableStateOf(false) }
     var msg by remember { mutableStateOf("") }
     val active = st.status != Recorder.Status.Idle
-    val perms = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.POST_NOTIFICATIONS)
+    val perms = buildList {
+        add(Manifest.permission.ACCESS_FINE_LOCATION); add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        // the notification permission only exists from Android 13; before that notifications are allowed
+        if (android.os.Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+    }.toTypedArray()
 
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
         if (r[Manifest.permission.ACCESS_FINE_LOCATION] == true) { msg = ""; RecordService.start(ctx, sport, pendingSim) }
