@@ -1,11 +1,14 @@
 # Build outputs
 build/
 .gradle/
+.kotlin/
 *.apk
 *.aab
 
 # Local secrets and config
 local.properties
+app/google-services.json
+google-services.json
 *.keystore
 *.jks
 .env
