@@ -694,7 +694,7 @@ private fun You(vm: AuraViewModel, ui: UiState) {
     val ctx = LocalContext.current
     Caps("About")
     Gap(8)
-    Text("Made by Yashwanth H P", style = T.head)
+    Text("Made by Yashwanth", style = T.head)
     Gap(8)
     LinkRow(ctx, "Aura's page", "yashwanth.duckdns.org/aura", "https://www.yashwanth.duckdns.org/aura")
     Rule()
