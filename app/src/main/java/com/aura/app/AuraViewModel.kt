@@ -17,6 +17,9 @@ import com.aura.app.data.Store
 import com.aura.app.health.Day
 import com.aura.app.health.DayInsight
 import com.aura.app.health.HealthSource
+import com.aura.app.update.CheckResult
+import com.aura.app.update.Update
+import com.aura.app.update.Updater
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,6 +53,10 @@ data class UiState(
     /** which day the insight shows: 0 = today, 1 = yesterday... */
     val insightBack: Int = 0,
     val insightBusy: Boolean = false,
+    val update: Update? = null,
+    /** null = not downloading */
+    val updateProgress: Float? = null,
+    val updateMsg: String = "",
 )
 
 class AuraViewModel(app: Application) : AndroidViewModel(app) {
@@ -160,7 +167,47 @@ class AuraViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Re-read health data and re-evaluate every goal. Call when the app returns to the foreground. */
+    private var lastUpdateCheck = 0L
+
+    fun checkForUpdates(manual: Boolean) {
+        if (_ui.value.updateProgress != null) return
+        val ctx = getApplication<Application>()
+        if (manual) _ui.update { it.copy(updateMsg = "Checking...") }
+        lastUpdateCheck = System.currentTimeMillis()
+        viewModelScope.launch {
+            when (val r = Updater.check(ctx)) {
+                is CheckResult.Available ->
+                    if (manual || !Updater.isSnoozed(ctx, r.update.version)) _ui.update { it.copy(update = r.update, updateMsg = "") }
+                    else _ui.update { it.copy(updateMsg = "") }
+                CheckResult.UpToDate -> _ui.update { it.copy(updateMsg = if (manual) "You're on the latest version" else "") }
+                is CheckResult.Failed -> _ui.update { it.copy(updateMsg = if (manual) "Couldn't check" else "") }
+            }
+        }
+    }
+
+    fun startUpdate() {
+        val u = _ui.value.update ?: return
+        if (_ui.value.updateProgress != null) return
+        val ctx = getApplication<Application>()
+        _ui.update { it.copy(updateProgress = 0f, updateMsg = "") }
+        viewModelScope.launch {
+            try {
+                val f = Updater.download(ctx, u) { p -> _ui.update { it.copy(updateProgress = p) } }
+                if (Updater.install(ctx, f)) _ui.update { it.copy(updateProgress = null, update = null) }
+                else _ui.update { it.copy(updateProgress = null, updateMsg = "Allow installs from Aura, then come back and tap Update again.") }
+            } catch (e: Exception) {
+                _ui.update { it.copy(updateProgress = null, updateMsg = e.message ?: "Update failed") }
+            }
+        }
+    }
+
+    fun snoozeUpdate() {
+        _ui.value.update?.let { Updater.snooze(getApplication(), it.version) }
+        _ui.update { it.copy(update = null, updateMsg = "") }
+    }
+
     fun refresh() {
+        if (System.currentTimeMillis() - lastUpdateCheck > 6 * 3600 * 1000L) checkForUpdates(false)
         viewModelScope.launch {
             val health = source.hasHealthAccess()
             val usage = source.hasUsageAccess()

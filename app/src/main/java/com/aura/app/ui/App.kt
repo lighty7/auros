@@ -51,6 +51,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -62,6 +63,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.res.painterResource
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
+import com.aura.app.R
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
@@ -127,6 +132,7 @@ fun App(vm: AuraViewModel) {
             adding?.let { start ->
                 AddGoalSheet(start, onDismiss = { adding = null }) { title, m, t, d -> vm.addGoal(title, m, t, d); adding = null; tab = Tab.GOALS }
             }
+            ui.update?.let { UpdateSheet(it, ui.updateProgress, ui.updateMsg, vm::startUpdate, vm::snoozeUpdate) }
             Celebration(ui.justEarned, vm::celebrated, Modifier.align(Alignment.TopCenter))
         }
     }
@@ -692,28 +698,52 @@ private fun You(vm: AuraViewModel, ui: UiState) {
     Text("Aura follows your phone's light or dark mode.", style = T.label)
     Gap(28)
     val ctx = LocalContext.current
-    Caps("About")
-    Gap(8)
-    Text("Made by Yashwanth", style = T.head)
-    Gap(8)
-    LinkRow(ctx, "Aura's page", "yashwanth.duckdns.org/aura", "https://www.yashwanth.duckdns.org/aura")
-    Rule()
-    LinkRow(ctx, "Source on GitHub", "lighty7/auros", "https://github.com/lighty7/auros")
-    Rule()
+    Caps("Made by")
     Gap(10)
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        MakerIcon(R.drawable.ic_github, "GitHub profile") { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/lighty7"))) }
+        MakerIcon(R.drawable.ic_person, "Personal website") { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.yashwanth.duckdns.org"))) }
+    }
+    Gap(18)
     Text("Version ${com.aura.app.BuildConfig.VERSION_NAME}", style = T.label)
+    Gap(6)
+    Btn("Check for updates", { vm.checkForUpdates(true) }, kind = Kind.Quiet, small = true)
+    if (ui.updateMsg.isNotBlank() && ui.update == null) { Gap(4); Text(ui.updateMsg, style = T.label) }
     Gap(20)
 }
 
 @Composable
-private fun LinkRow(ctx: android.content.Context, label: String, short: String, url: String) {
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 52.dp)
-            .clickable { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) },
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = T.body, modifier = Modifier.weight(1f))
-        GapW(12)
-        Caps(short, color = C.accent)
+private fun MakerIcon(res: Int, label: String, onClick: () -> Unit) {
+    val src = remember { MutableInteractionSource() }
+    Box(
+        Modifier.size(48.dp).press(src).clip(CircleShape).border(1.dp, C.line, CircleShape)
+            .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { Icon(painterResource(res), contentDescription = label, tint = C.ink, modifier = Modifier.size(22.dp)) }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun UpdateSheet(u: com.aura.app.update.Update, progress: Float?, msg: String, onUpdate: () -> Unit, onLater: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = { if (progress == null) onLater() }, containerColor = C.surface, contentColor = C.ink, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 22.dp).padding(bottom = 28.dp)) {
+            Caps("Update available")
+            Gap(6)
+            Text(u.version, style = T.title)
+            Gap(12)
+            u.notes.take(8).forEach { Text("- $it", style = T.label); Gap(4) }
+            if (u.size > 0) { Gap(6); Text("%.1f MB".format(u.size / 1048576.0), style = T.label) }
+            Gap(20)
+            if (progress != null) {
+                Meter(progress, Modifier.fillMaxWidth())
+                Gap(8)
+                Text("Downloading... ${(progress * 100).toInt()}%", style = T.label)
+            } else {
+                if (msg.isNotBlank()) { Text(msg, style = T.label.copy(color = C.bad)); Gap(12) }
+                Btn("Update now", onUpdate, Modifier.fillMaxWidth(), kind = Kind.Accent)
+                Gap(6)
+                Btn("Later", onLater, Modifier.fillMaxWidth(), kind = Kind.Quiet)
+            }
+        }
     }
 }
