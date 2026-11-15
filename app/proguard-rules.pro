@@ -12,3 +12,9 @@
 # Keep line numbers so crash reports from release builds are readable.
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
+
+# WorkManager's database is created by reflection (Room looks up WorkDatabase_Impl's no-arg constructor).
+-keep class * extends androidx.room.RoomDatabase { <init>(); }
+-keep class androidx.work.impl.WorkDatabase_Impl { *; }
+# Workers are instantiated by class name.
+-keep class * extends androidx.work.ListenableWorker { <init>(android.content.Context, androidx.work.WorkerParameters); }
