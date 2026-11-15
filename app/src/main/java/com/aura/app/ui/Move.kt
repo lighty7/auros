@@ -77,6 +77,7 @@ import java.util.Locale
 sealed interface MoveScreen {
     data object Plan : MoveScreen
     data object Record : MoveScreen
+    data object Ledger : MoveScreen
     data class Detail(val id: Long) : MoveScreen
 }
 

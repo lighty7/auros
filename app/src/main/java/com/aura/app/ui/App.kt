@@ -124,6 +124,7 @@ fun App(vm: AuraViewModel) {
             ) { s ->
                 when (s) {
                     MoveScreen.Plan -> PlanScreen(onBack = { screen = null }, onStart = { screen = MoveScreen.Record })
+                    MoveScreen.Ledger -> LedgerScreen(ui, onBack = { screen = null })
                     MoveScreen.Record -> RecordScreen(onBack = { screen = null }, onSaved = { screen = MoveScreen.Detail(it); vm.refresh() })
                     is MoveScreen.Detail -> DetailScreen(vm, ui, s.id, onBack = { screen = null; vm.refresh() })
                     null -> Shell(vm, ui, tab, onTab = { tab = it }, onAdd = { adding = it }, onScreen = { screen = it })
@@ -163,11 +164,11 @@ private fun Pages(modifier: Modifier, vm: AuraViewModel, ui: UiState, tab: Tab, 
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
             Column(Modifier.widthIn(max = 640.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(top = 20.dp, bottom = 36.dp)) {
                 when (t) {
-                    Tab.TODAY -> Today(vm, ui, onAdd, goGoals = { onTab(Tab.GOALS) })
+                    Tab.TODAY -> Today(vm, ui, onAdd, goGoals = { onTab(Tab.GOALS) }, onLedger = { onScreen(MoveScreen.Ledger) })
                     Tab.MOVE -> MoveHome(onPlan = { onScreen(MoveScreen.Plan) }, onRecord = { onScreen(MoveScreen.Record) }, onOpen = { onScreen(MoveScreen.Detail(it)) })
                     Tab.GOALS -> Goals(ui.goals, onAdd = { onAdd(Triple("", Metric.STEPS, Metric.STEPS.defaultTarget)) }, onDelete = vm::deleteGoal)
                     Tab.CIRCLE -> Circle(vm, ui)
-                    Tab.YOU -> You(vm, ui)
+                    Tab.YOU -> You(vm, ui, onLedger = { onScreen(MoveScreen.Ledger) })
                 }
             }
         }
@@ -233,8 +234,8 @@ private fun Celebration(earned: Int, onDone: () -> Unit, modifier: Modifier) {
             Text("+${countUp(shown)}", style = T.title.copy(color = C.onAccent))
             GapW(14)
             Column(Modifier.weight(1f)) {
-                Text("Goal complete", style = T.head.copy(color = C.onAccent))
-                Text("Aura added. Find it under Circle to share.", style = T.label.copy(color = C.onAccent.copy(alpha = 0.75f)))
+                Text("Aura earned", style = T.head.copy(color = C.onAccent))
+                Text("Added to your total. See how under You.", style = T.label.copy(color = C.onAccent.copy(alpha = 0.75f)))
             }
         }
     }
@@ -283,7 +284,7 @@ private fun Onboarding(onDone: (Profile) -> Unit) {
 // ---------- today ----------
 
 @Composable
-private fun Today(vm: AuraViewModel, ui: UiState, onAdd: (Triple<String, Metric, Double>) -> Unit, goGoals: () -> Unit) {
+private fun Today(vm: AuraViewModel, ui: UiState, onAdd: (Triple<String, Metric, Double>) -> Unit, goGoals: () -> Unit, onLedger: () -> Unit) {
     val hello = remember { when (LocalTime.now().hour) { in 5..11 -> "Good morning"; in 12..16 -> "Good afternoon"; else -> "Good evening" } }
     val date = remember { LocalDate.now().format(DateTimeFormatter.ofPattern("EEEE d MMMM")) }
 
@@ -294,6 +295,10 @@ private fun Today(vm: AuraViewModel, ui: UiState, onAdd: (Triple<String, Metric,
     }
     Gap(12)
     Reveal(1) { AuraHalo(ui.aura) }
+    if (ui.healthOk && ui.today.isNotEmpty()) {
+        Gap(20)
+        Reveal(1) { TodayStrip(ui.today, ui.streaks, onLedger) }
+    }
     Connections(vm, ui)
     Gap(32)
     Reveal(2) { BodyAndScreen(vm, ui) }
@@ -672,7 +677,7 @@ private fun StatusRow(label: String, ok: Boolean, state: String) {
 }
 
 @Composable
-private fun You(vm: AuraViewModel, ui: UiState) {
+private fun You(vm: AuraViewModel, ui: UiState, onLedger: () -> Unit) {
     Caps(ui.profile.occupation)
     Gap(6)
     Text(ui.profile.name, style = T.title)
@@ -682,6 +687,8 @@ private fun You(vm: AuraViewModel, ui: UiState) {
         Stat("Completed", "${ui.goals.count { it.status == Status.COMPLETED }}"),
         Stat("In progress", "${ui.goals.count { it.status == Status.ACTIVE }}"),
     ))
+    Gap(12)
+    Btn("How you earned it", onLedger, kind = Kind.Outline, small = true)
     Connections(vm, ui)
     Gap(28)
     Caps("Connections")

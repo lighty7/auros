@@ -6,6 +6,12 @@ import androidx.lifecycle.viewModelScope
 import android.app.Activity
 import com.aura.app.data.ActivityStore
 import com.aura.app.data.Cloud
+import com.aura.app.data.Earn
+import com.aura.app.data.EarnRules
+import com.aura.app.data.Earned
+import com.aura.app.data.TodayItem
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import com.aura.app.data.Goal
 import com.aura.app.data.Person
 import com.aura.app.data.Post
@@ -33,11 +39,14 @@ data class UiState(
     val profile: Profile = Profile(),
     val goals: List<GoalProgress> = emptyList(),
     val aura: Int = 0,
+    val ledger: List<Earned> = emptyList(),
+    val today: List<TodayItem> = emptyList(),
+    val streaks: Map<String, Int> = emptyMap(),
     val healthAvailable: Boolean = true,
     val healthOk: Boolean = false,
     val usageOk: Boolean = false,
     val loading: Boolean = true,
-    /** aura earned by goals that completed during the last refresh, to celebrate once */
+    /** aura earned (goals and daily earnings) during the last refresh, to celebrate once */
     val justEarned: Int = 0,
     val signedIn: Boolean = false,
     val email: String = "",
@@ -101,7 +110,7 @@ class AuraViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun syncUp() {
         runCatching {
             val goals = store.goals()
-            cloud.pushProfile(store.profile(), goals.sumOf { it.awarded })
+            cloud.pushProfile(store.profile(), store.earnState().total)
             goals.filter { it.awarded > 0 }.forEach { cloud.post(it, store.profile()) }
         }.onFailure(::err)
     }
@@ -206,6 +215,8 @@ class AuraViewModel(app: Application) : AndroidViewModel(app) {
         _ui.update { it.copy(update = null, updateMsg = "") }
     }
 
+    private val earnLock = Mutex()
+
     fun refresh() {
         if (System.currentTimeMillis() - lastUpdateCheck > 6 * 3600 * 1000L) checkForUpdates(false)
         viewModelScope.launch {
@@ -248,14 +259,30 @@ class AuraViewModel(app: Application) : AndroidViewModel(app) {
                 store.saveGoals(goals)
                 if (cloud.uid != null) { pushGoalsBg(); syncUp(); loadSocial() }
             }
+            val allGoals = progress.map { it.goal }
+            val (es, gained, todayDay) = earnLock.withLock {
+                var st = store.earnState()
+                val t = today.toEpochDay()
+                if (st.start <= 0) st = st.copy(start = t, lastEval = t - 1)
+                val access = health || usage
+                val from = maxOf(st.lastEval + 1, t - EarnRules.MAX_BACK_DAYS, st.start)
+                val ed = if (access) source.days(LocalDate.ofEpochDay(from), today, health, usage) else emptyMap()
+                val r = Earn.run(st, today, ed, access, allGoals)
+                store.saveEarn(r.state)
+                Triple(r.state, r.gained, ed[today])
+            }
+            if (es.total != _ui.value.aura && cloud.uid != null) viewModelScope.launch { runCatching { cloud.pushProfile(store.profile(), es.total) } }
             _ui.value = _ui.value.copy(
                 goals = progress,
-                aura = progress.sumOf { it.goal.awarded },
+                aura = es.total,
+                ledger = Earn.newestFirst(es.ledger),
+                today = if (health || usage) Earn.todayItems(es.ledger, today, todayDay) else emptyList(),
+                streaks = Earn.streaks(es.ledger, today),
                 healthAvailable = source.available,
                 healthOk = health,
                 usageOk = usage,
                 loading = false,
-                justEarned = _ui.value.justEarned + earned,
+                justEarned = _ui.value.justEarned + earned + gained,
             )
             loadInsight()
         }
